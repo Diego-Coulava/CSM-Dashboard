@@ -220,21 +220,32 @@ main{padding:28px 40px;max-width:1360px;margin:0 auto;position:relative;z-index:
     <button class="modal-close" onclick="closeReportModal()">✕</button>
     <div class="modal-title">Buat Report</div>
     <div class="modal-sub">Generate prompt untuk Claude Project Omotott</div>
+
+    <!-- Tipe report: Bulanan / Mingguan -->
     <div class="modal-section">
       <div class="modal-label">Tipe Report</div>
       <div class="modal-opts">
-        <button class="modal-opt selected" id="opt-mingguan" onclick="selectReportType('mingguan',this)">Report Mingguan</button>
-        <button class="modal-opt" id="opt-bulanan" onclick="selectReportType('bulanan',this)">Report Bulanan</button>
+        <button class="modal-opt selected" id="opt-bulanan" onclick="selectReportType('bulanan',this)">Report Bulanan</button>
+        <button class="modal-opt" id="opt-mingguan" onclick="selectReportType('mingguan',this)">Report Mingguan</button>
       </div>
     </div>
-    <div class="modal-section" id="modal-period-section">
-      <div class="modal-label" id="modal-period-label">Periode Mingguan</div>
+
+    <!-- Bulanan: dynamic month+year buttons -->
+    <div class="modal-section" id="modal-section-bulanan">
+      <div class="modal-label">Pilih Bulan</div>
+      <div id="modal-month-btns" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
+    </div>
+
+    <!-- Mingguan: free date range -->
+    <div class="modal-section" id="modal-section-mingguan" style="display:none">
+      <div class="modal-label">Report Set Date</div>
       <div class="modal-date-row">
         <input type="date" class="modal-input" id="report-start" placeholder="Mulai">
         <span style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text3)">→</span>
         <input type="date" class="modal-input" id="report-end" placeholder="Akhir">
       </div>
     </div>
+
     <button class="modal-gen-btn" onclick="generateReportPrompt()">Generate &amp; Copy Prompt</button>
   </div>
 </div>
@@ -1242,31 +1253,24 @@ function buatKontenMingguIni() {
   }
 
   var prompt = 'Buat konten minggu ini untuk Omotott.\n\n' +
-    'DATA PERFORMA L30 HARI:\n' +
-    'Total posts: ' + totalPosts + '\n' +
-    'Avg reach: ' + avgReach.toLocaleString() + '\n' +
-    'Avg ER: ' + avgER.toFixed(1) + '%\n' +
-    'Top hook type: ' + topHook + '\n' +
-    'Top content pillar: ' + topPillar + '\n\n' +
-    'KOMBINASI TERBUKTI PERFORM (prioritaskan ini):\n' +
+    '// SKILL TRIGGERS\n' +
+    'Gunakan writing-execution.md skill untuk semua output konten.\n' +
+    'Gunakan hook-reference.md skill untuk pilih hook formula dari hook bank.\n' +
+    'Gunakan past performance data dari Project Knowledge untuk validasi kombinasi.\n\n' +
+    '// CONTEXT\n' +
+    'Tipe konten minggu ini: [Reels] [Carousel] [Single Banner]\n\n' +
+    '// PERFORMANCE BIAS (from live sheet data)\n' +
+    'KOMBINASI TERBUKTI PERFORM — prioritaskan:\n' +
     [top3[0],top3[1],top3[2]].map(comboLine).join('\n') + '\n\n' +
-    'KOMBINASI UNDERPERFORM (hindari):\n' +
+    'KOMBINASI HINDARI:\n' +
     [bottom3[0],bottom3[1],bottom3[2]].map(comboLineBottom).join('\n') + '\n\n' +
-    'KOMBINASI BELUM DICOBA (eksperimen):\n' +
-    (untested.length > 0 ? '1. ' + (untested[0]||'—') + '\n' : '1. —\n') +
-    (untested.length > 1 ? '2. ' + (untested[1]||'—') + '\n' : '2. —\n') + '\n' +
-    'INSTRUKSI:\n' +
-    'Gunakan CCF output template yang ada di Project Knowledge.\n' +
-    'Gunakan data performa di atas untuk bias ke kombinasi yang terbukti perform.\n' +
-    'Hindari kombinasi underperform di atas.\n' +
-    'Gunakan Tavily untuk cari konten trending dan viral di niche influencer otomotif indonesia\n' +
-    'dalam 3 hari terakhir sebagai referensi hook, angle, dan topik.\n' +
-    'Jika tidak ada referensi relevan, generate dari brand context saja.\n' +
-    'Output satu CCF row per konten dalam format TSV dengan kolom order:\n' +
-    'Creative ID | Date | Content Pillar | Channel | Medium | Banner Size |\n' +
-    'Creative Status | Topik | Referensi | Angle | Jenis Hook | Hook |\n' +
-    'Copywriting Isi Content | Asset Photo / Video | Caption |\n' +
-    'Story Copywriting | Jam Publish';
+    'KOMBINASI BELUM DICOBA — eksperimen opsional:\n' +
+    '1. ' + (untested[0]||'—') + '\n' +
+    '2. ' + (untested[1]||'—') + '\n\n' +
+    '// TREND RESEARCH\n' +
+    'Gunakan Tavily untuk cari konten trending dan viral\n' +
+    'di niche influencer otomotif Indonesia dalam 3 hari terakhir\n' +
+    'sebagai referensi topik dan angle.';
 
   copyAndOpen(prompt, 'Prompt copied — paste ke Claude Project Omotott');
 }
@@ -1274,7 +1278,21 @@ function buatKontenMingguIni() {
 // =====================================================
 // BUTTON 2 — BUAT REPORT (MODAL)
 // =====================================================
+
+// State: which month key is selected for bulanan
+var selectedBulananKey = null;
+
 function openReportModal() {
+  // Default to bulanan
+  selectedReportType = 'bulanan';
+  selectedBulananKey = null;
+  document.getElementById('opt-bulanan').classList.add('selected');
+  document.getElementById('opt-mingguan').classList.remove('selected');
+  document.getElementById('modal-section-bulanan').style.display = '';
+  document.getElementById('modal-section-mingguan').style.display = 'none';
+  document.getElementById('report-start').value = '';
+  document.getElementById('report-end').value = '';
+  _buildMonthButtons();
   document.getElementById('report-modal').classList.add('open');
 }
 
@@ -1282,70 +1300,236 @@ function closeReportModal() {
   document.getElementById('report-modal').classList.remove('open');
 }
 
+// Build dynamic month+year buttons from MONTH_RANGES
+// MONTH_RANGES keys are like 'jan','feb' — but may span multiple years,
+// so we build from actual data grouped by YYYY-MM
+function _buildMonthButtons() {
+  var container = document.getElementById('modal-month-btns');
+  container.innerHTML = '';
+
+  // Build unique year-month entries from data, sorted chronologically
+  var seen = {};
+  var entries = [];
+  P.forEach(function(x) {
+    var dt = new Date(x.d);
+    var y = dt.getFullYear();
+    var m = dt.getMonth(); // 0-indexed
+    var key = y + '-' + String(m + 1).padStart(2, '0');
+    if (!seen[key]) {
+      seen[key] = true;
+      entries.push({ key: key, y: y, m: m });
+    }
+  });
+  entries.sort(function(a, b) { return a.key.localeCompare(b.key); });
+
+  var MONTH_LABELS = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Ags','Sep','Okt','Nov','Des'];
+
+  entries.forEach(function(e) {
+    var label = MONTH_LABELS[e.m] + ' ' + e.y;
+    var btn = document.createElement('button');
+    btn.className = 'tg';
+    btn.textContent = label;
+    btn.dataset.key = e.key;
+    btn.onclick = function() {
+      // Deselect all month buttons, select this one
+      container.querySelectorAll('.tg').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      selectedBulananKey = e.key; // "2026-01" etc
+    };
+    container.appendChild(btn);
+  });
+}
+
 function selectReportType(type, btn) {
   selectedReportType = type;
-  document.querySelectorAll('.modal-opt').forEach(function(b){ b.classList.remove('selected'); });
+  document.querySelectorAll('.modal-opt').forEach(function(b) { b.classList.remove('selected'); });
   btn.classList.add('selected');
-  document.getElementById('modal-period-label').textContent = type === 'mingguan' ? 'Periode Mingguan' : 'Periode Bulanan';
+  if (type === 'bulanan') {
+    document.getElementById('modal-section-bulanan').style.display = '';
+    document.getElementById('modal-section-mingguan').style.display = 'none';
+  } else {
+    document.getElementById('modal-section-bulanan').style.display = 'none';
+    document.getElementById('modal-section-mingguan').style.display = '';
+  }
+}
+
+// ---- DATA HELPERS FOR REPORT ----
+
+// Classify medium into Reels / Carousel / Single Banner
+function classifyMedium(medium) {
+  var m = (medium || '').toLowerCase().trim();
+  if (m === 'reels') return 'Reels';
+  if (m === 'carousel') return 'Carousel';
+  return 'Single Banner'; // 9:16, 0.39, or anything else
+}
+
+// Calculate growth % between two values — returns formatted string like "+12.5%" or "—"
+function calcGrowth(current, previous) {
+  if (!previous || previous === 0) return '—';
+  var pct = ((current - previous) / previous) * 100;
+  return (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%';
+}
+
+// Get comparison period: same length, immediately before selected range
+function getComparisonData(start, end) {
+  var startDate = new Date(start);
+  var endDate = new Date(end + 'T23:59:59');
+  var lengthMs = endDate - startDate;
+  var compEnd = new Date(startDate.getTime() - 1); // day before start
+  var compStart = new Date(compEnd.getTime() - lengthMs);
+  var compStartStr = compStart.toISOString().slice(0, 10);
+  var compEndStr = compEnd.toISOString().slice(0, 10);
+  return getPeriodData(compStartStr, compEndStr);
 }
 
 function generateReportPrompt() {
   if (!P.length) { showToast('Data belum dimuat'); return; }
-  var start = document.getElementById('report-start').value;
-  var end = document.getElementById('report-end').value;
-  var data = start || end ? getPeriodData(start, end) : P;
+
+  var start, end, selectedPeriod, compData;
+  var MONTH_LABELS_ID = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+
+  if (selectedReportType === 'bulanan') {
+    if (!selectedBulananKey) { showToast('Pilih bulan terlebih dahulu'); return; }
+    var parts = selectedBulananKey.split('-'); // ["2026","01"]
+    var yr = parseInt(parts[0]), mo = parseInt(parts[1]) - 1; // mo = 0-indexed
+    start = parts[0] + '-' + parts[1] + '-01';
+    var lastDay = new Date(yr, mo + 1, 0).getDate();
+    end = parts[0] + '-' + parts[1] + '-' + String(lastDay).padStart(2, '0');
+    selectedPeriod = MONTH_LABELS_ID[mo] + ' ' + yr;
+    // Compare vs previous month
+    var prevMo = mo === 0 ? 11 : mo - 1;
+    var prevYr = mo === 0 ? yr - 1 : yr;
+    var prevStart = prevYr + '-' + String(prevMo + 1).padStart(2, '0') + '-01';
+    var prevLastDay = new Date(prevYr, prevMo + 1, 0).getDate();
+    var prevEnd = prevYr + '-' + String(prevMo + 1).padStart(2, '0') + '-' + prevLastDay;
+    compData = getPeriodData(prevStart, prevEnd);
+  } else {
+    start = document.getElementById('report-start').value;
+    end = document.getElementById('report-end').value;
+    if (!start || !end) { showToast('Pilih tanggal mulai dan akhir'); return; }
+    selectedPeriod = fmtDateFull(start) + ' – ' + fmtDateFull(end);
+    compData = getComparisonData(start, end);
+  }
+
+  var data = getPeriodData(start, end);
   if (!data.length) { showToast('Tidak ada data untuk periode ini'); return; }
 
-  var totalPosts = data.length;
-  var avgReach = Math.round(avgOf(data, function(x){ return x.r; }));
-  var avgER = avgOf(data, erFn);
-  var topHook = calcTopHook(data);
-  var topPillar = calcTopPillar(data);
-  var combos = calcCombos(data);
-  var top3 = combos.slice(0, 3);
-  var bottom2 = combos.slice(-2).reverse();
-  var untested = calcUntested(data, 3);
-  var top5Posts = data.slice().sort(function(a,b){ return b.r-a.r; }).slice(0,5);
+  // ---- METRICS: current period ----
+  var totalPosts    = data.length;
+  var totalReach    = data.reduce(function(s, x) { return s + x.r; }, 0);
+  var totalLikes    = data.reduce(function(s, x) { return s + x.lk; }, 0);
+  var totalComments = data.reduce(function(s, x) { return s + x.cm; }, 0);
+  var totalShares   = data.reduce(function(s, x) { return s + x.sh; }, 0);
+  var totalSaves    = data.reduce(function(s, x) { return s + x.sv; }, 0);
+  var avgER         = avgOf(data, erFn);
 
-  var months = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Ags','Sep','Okt','Nov','Des'];
-  var selectedPeriod = start && end ? (fmtDateFull(start) + ' – ' + fmtDateFull(end)) : 'Semua data';
-  var reportType = selectedReportType === 'mingguan' ? 'Mingguan' : 'Bulanan';
+  // ---- METRICS: comparison period ----
+  var prevTotalReach    = compData.reduce(function(s, x) { return s + x.r; }, 0);
+  var prevTotalLikes    = compData.reduce(function(s, x) { return s + x.lk; }, 0);
+  var prevTotalComments = compData.reduce(function(s, x) { return s + x.cm; }, 0);
+  var prevTotalShares   = compData.reduce(function(s, x) { return s + x.sh; }, 0);
+  var prevTotalSaves    = compData.reduce(function(s, x) { return s + x.sv; }, 0);
+  var prevAvgER         = avgOf(compData, erFn);
 
+  // ---- POST TYPE BREAKDOWN ----
+  var reelsCount   = data.filter(function(x) { return classifyMedium(x.medium) === 'Reels'; }).length;
+  var carouselCount= data.filter(function(x) { return classifyMedium(x.medium) === 'Carousel'; }).length;
+  var bannerCount  = data.filter(function(x) { return classifyMedium(x.medium) === 'Single Banner'; }).length;
+
+  // ---- TOP 3 & BOTTOM 3 POSTS BY REACH ----
+  var sortedByReach = data.slice().sort(function(a, b) { return b.r - a.r; });
+  var top3Posts    = sortedByReach.slice(0, 3);
+  var bottom3Posts = sortedByReach.slice(-3).reverse();
+
+  // ---- COMBINATION MATRIX ----
+  var combos   = calcCombos(data);
+  var top3Combos    = combos.slice(0, 3);
+  var bottom3Combos = combos.slice(-3).reverse();
+
+  // ---- HELPER: format a post line for the prompt ----
   function postLine(x, i) {
-    return (i+1)+'. '+(x?x.t:'—')+' — Reach: '+(x?x.r.toLocaleString():'—')+', ER: '+(x?erFn(x).toFixed(1):'—')+'%, Hook: '+(x?x.h:'—')+', Angle: '+(x?x.a:'—');
-  }
-  function comboLine(c, i) {
-    return (i+1)+'. '+(c?c.key:'—')+' — Avg ER: '+(c?c.er.toFixed(1):'—')+'%, Avg Reach: '+(c?c.reach.toLocaleString():'—');
-  }
-  function comboLineBottom(c, i) {
-    return (i+1)+'. '+(c?c.key:'—')+' — Avg ER: '+(c?c.er.toFixed(1):'—')+'%';
+    if (!x) return (i + 1) + '. —';
+    return (i + 1) + '. ' + x.t + '\n' +
+      '   Reach: ' + x.r.toLocaleString() +
+      ' | Likes: ' + x.lk +
+      ' | Comments: ' + x.cm +
+      ' | Shares: ' + x.sh +
+      ' | Saves: ' + x.sv + '\n' +
+      '   Combo: ' + x.p + ' × ' + x.a + ' × ' + x.h +
+      ' | Type: ' + classifyMedium(x.medium) + '\n' +
+      '   [Screenshot placeholder]';
   }
 
-  var prompt = 'Buatkan report '+reportType+' untuk Omotott periode '+selectedPeriod+'.\n\n' +
-    'DATA PERFORMA:\n' +
+  function comboLine(c, i) {
+    if (!c) return (i + 1) + '. —';
+    return (i + 1) + '. ' + c.key +
+      ' — Avg ER: ' + c.er.toFixed(1) + '%' +
+      ', Avg Reach: ' + c.reach.toLocaleString() +
+      ', Posts: ' + c.count;
+  }
+
+  // ---- BUILD PROMPT ----
+  var prompt =
+    'Buatkan Social Media Report untuk Omotott.\n' +
+    'Periode: ' + selectedPeriod + '\n\n' +
+
+    '// REFERENCE\n' +
+    'Gunakan "social media report template.pdf" di Project Knowledge sebagai\n' +
+    'referensi style. Buat slide yang modern, simple, dan konsisten dengan\n' +
+    'style dokumen tersebut — tidak perlu mengikuti layout secara strict.\n\n' +
+
+    '// DATA\n\n' +
+
+    'OVERVIEW (Slide 2):\n' +
+    'Total Followers & growth: [placeholder — isi manual]\n' +
+    'Total Reach periode ini: ' + totalReach.toLocaleString() + '\n' +
+    'Reach vs periode sebelumnya: ' + calcGrowth(totalReach, prevTotalReach) + '\n' +
+    'Avg ER periode ini: ' + avgER.toFixed(2) + '%\n' +
+    'ER vs periode sebelumnya: ' + calcGrowth(avgER, prevAvgER) + '\n\n' +
+
+    'ENGAGEMENT (Slide 3):\n' +
+    'Avg ER: ' + avgER.toFixed(2) + '%\n' +
+    'Total Likes: ' + totalLikes.toLocaleString() + ' — vs sebelumnya: ' + calcGrowth(totalLikes, prevTotalLikes) + '\n' +
+    'Total Comments: ' + totalComments + ' — vs sebelumnya: ' + calcGrowth(totalComments, prevTotalComments) + '\n' +
+    'Total Shares: ' + totalShares + ' — vs sebelumnya: ' + calcGrowth(totalShares, prevTotalShares) + '\n' +
+    'Total Saves: ' + totalSaves + ' — vs sebelumnya: ' + calcGrowth(totalSaves, prevTotalSaves) + '\n' +
+    'Total Repost: [placeholder — isi manual]\n\n' +
+
+    'POST OVERVIEW (Slide 4):\n' +
     'Total posts: ' + totalPosts + '\n' +
-    'Avg reach: ' + avgReach.toLocaleString() + '\n' +
-    'Avg ER: ' + avgER.toFixed(1) + '%\n' +
-    'Top hook type: ' + topHook + '\n' +
-    'Top content pillar: ' + topPillar + '\n\n' +
-    'TOP 5 POSTS BY REACH:\n' +
-    top5Posts.map(postLine).join('\n') + '\n\n' +
-    'TOP 3 KOMBINASI:\n' +
-    [top3[0],top3[1],top3[2]].map(comboLine).join('\n') + '\n\n' +
-    'KOMBINASI UNDERPERFORM:\n' +
-    [bottom2[0],bottom2[1]].map(comboLineBottom).join('\n') + '\n\n' +
-    'UNTESTED COMBINATIONS WORTH TRYING:\n' +
-    '1. ' + (untested[0]||'—') + '\n' +
-    '2. ' + (untested[1]||'—') + '\n\n' +
-    'INSTRUKSI:\n' +
-    'Buatkan report dalam format PPTx dengan struktur berikut:\n' +
-    'Slide 1: Cover — Omotott, periode '+selectedPeriod+',\n' +
-    'Coulava Digital Creative Agency, Coulava.com\n' +
-    'Slide 2: Key Metrics — total posts, avg reach, avg ER, top hook, top pillar\n' +
-    'Slide 3: Top 5 Posts by Reach — tabel dengan kolom Topik, Reach, ER, Hook, Angle\n' +
-    'Slide 4: Combination Matrix Summary — top 3 kombinasi dengan metrics\n' +
-    'Slide 5: Rekomendasi — repeat (top 2), avoid (bottom 2), test (untested 2)\n' +
-    'Gunakan warna brand Omotott dan sertakan logo Coulava di footer setiap slide.';
+    'Reels: ' + reelsCount + '\n' +
+    'Carousel: ' + carouselCount + '\n' +
+    'Single Banner: ' + bannerCount + '\n' +
+    '[Screenshot placeholder — tim replace dengan screenshot post actual]\n\n' +
+
+    'TOP 3 POSTS BY REACH (Slide 5):\n' +
+    top3Posts.map(postLine).join('\n') + '\n\n' +
+
+    'BOTTOM 3 POSTS BY REACH (Slide 6):\n' +
+    bottom3Posts.map(postLine).join('\n') + '\n\n' +
+
+    'COMBINATION MATRIX (Slide 7–9):\n' +
+    '[Screenshot placeholder — tim replace dengan screenshot dari dashboard]\n' +
+    'Slide 7: Pillar × Angle Matrix\n' +
+    'Slide 8: Hook × Angle Matrix\n' +
+    'Slide 9: Hook × Pillar Matrix\n\n' +
+
+    '// INSTRUKSI\n' +
+    'Buatkan 11 slide PPTx dengan struktur:\n' +
+    'Slide 1: Cover — "Social Media Report", ' + selectedPeriod + ', Omotott\n' +
+    'Slide 2: Overview — metrics di atas + insights <50 kata\n' +
+    'Slide 3: Engagement Overview — breakdown + growth vs sebelumnya + insights <50 kata\n' +
+    'Slide 4: Post Overview — total + breakdown tipe + screenshot placeholder + insights <50 kata\n' +
+    'Slide 5: Top 3 Posts — data lengkap + combo + screenshot placeholder + insights <50 kata\n' +
+    'Slide 6: Bottom 3 Posts — data lengkap + combo + insights <50 kata\n' +
+    'Slide 7: Pillar × Angle Matrix — screenshot placeholder + insights <50 kata\n' +
+    'Slide 8: Hook × Angle Matrix — screenshot placeholder + insights <50 kata\n' +
+    'Slide 9: Hook × Pillar Matrix — screenshot placeholder + insights <50 kata\n' +
+    'Slide 10: Next Steps — rekomendasi berdasarkan data: apa yang perlu di-double down,\n' +
+    '          apa yang perlu dihindari, kombinasi mana yang perlu dieksplor\n' +
+    'Slide 11: Thank You — Coulava Digital Creative Agency, Coulava.com\n\n' +
+    'Sertakan logo Coulava di footer setiap slide.\n' +
+    'Output sebagai file PPTx yang bisa langsung didownload.';
 
   closeReportModal();
   copyAndOpen(prompt, 'Prompt copied — paste ke Claude Project Omotott');
