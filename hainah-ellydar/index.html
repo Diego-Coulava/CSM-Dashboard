@@ -890,9 +890,7 @@ async function loadData() {
     var candidates = [];
     var seenTabs = {};
 
-    // FIX v3: kalau metadata spreadsheet berhasil dibaca, pakai nama tab asli dari Google Sheets saja.
-    // Ini menghilangkan error 400 dari nama tab tebakan/manual yang tidak persis sama.
-    (sheetTitles.length ? sheetTitles : manualCandidates).forEach(function(name){
+    manualCandidates.concat(sheetTitles).forEach(function(name){
       if (!name) return;
       var k = String(name).toLowerCase().trim();
       if (seenTabs[k]) return;
@@ -1950,11 +1948,17 @@ function selectReportType(type, btn) {
 }
 
 function buildPostOverviewLines(posts, periodLabel, config) {
+  var maxRows = config.maxCompactPostRows || 20;
+  var overflowRows = config.maxOverflowPostRows || 10;
   var rows = posts;
   var note = '';
 
-  // BUGFIX: untuk report, jangan truncate daftar post.
-  // Claude perlu melihat semua post periode agar tidak mengira report hanya punya 3/4 konten.
+  // Jika post banyak, jangan kirim semua baris. Top/Bottom tetap lengkap di slide 5–6.
+  if (posts.length > maxRows) {
+    rows = getTopPostsByReach(posts, overflowRows);
+    note = '\nCatatan: total ada ' + posts.length + ' post. Di Slide 4 cukup tampilkan ringkasan + ' + overflowRows + ' post reach tertinggi. Detail lengkap tetap ambil dari CCF jika diperlukan.';
+  }
+
   return rows.map(function(x, i){
     return (i + 1) + '. ' + fmtDate(x.d) + ' — ' + x.t +
       ' | ' + classifyMedium(x.medium) +
@@ -1999,31 +2003,6 @@ function buildMatrixInsightLines(data) {
   };
 }
 
-function buildFullReportPostLines(posts, periodLabel, config) {
-  var limit = config.maxReportPostRows || 80;
-  var rows = posts.slice().sort(function(a,b){ return a.dateObj - b.dateObj; });
-  var note = '';
-  if (rows.length > limit) {
-    note = '\nCatatan: total ada ' + rows.length + ' post. Daftar di bawah hanya ' + limit + ' post pertama; tetap gunakan total posts dan metrik dari seluruh data periode.';
-    rows = rows.slice(0, limit);
-  }
-  return rows.map(function(x, i){
-    return (i + 1) + '. ' + fmtDateFull(x.d) + ' — ' + (x.t || '[Tanpa topik]') +
-      ' | Pilar: ' + (x.p || '—') +
-      ' | Hook: ' + (x.h || '—') +
-      ' | Angle: ' + (x.a || '—') +
-      ' | Type: ' + classifyMedium(x.medium) +
-      ' | Reach: ' + x.r.toLocaleString() +
-      ' | Likes: ' + x.lk +
-      ' | Comments: ' + x.cm +
-      ' | Shares: ' + x.sh +
-      ' | Saves: ' + x.sv +
-      ' | ER: ' + erFn(x).toFixed(1) + '%' +
-      ' | IG: ' + formatLinkIG(x) +
-      ' | Asset: ' + (x.asset || buildLocalAssetPath(config.name, periodLabel, 'post-overview', i + 1, x.t));
-  }).join('\n') + note;
-}
-
 function buildReportPrompt(data, compData, periodLabel, config) {
   var cur = metricSummary(data);
   var prev = metricSummary(compData || []);
@@ -2033,7 +2012,6 @@ function buildReportPrompt(data, compData, periodLabel, config) {
   var top3Posts = getTopPostsByReach(data, 3);
   var bottom3Posts = getBottomPostsByReach(data, 3);
   var matrixStats = buildMatrixInsightLines(data);
-  var allPostLines = buildFullReportPostLines(data, periodLabel, config);
   var clientFolder = config.slug || slugify(config.name);
   var reportFolderPath = 'Downloads/Client SMM/' + clientFolder + '/' + periodLabel;
   var assetFolderPath = reportFolderPath + '/assets';
@@ -2082,8 +2060,8 @@ function buildReportPrompt(data, compData, periodLabel, config) {
     'Hasil HTML baru harus 100% sama persis dengan template tersebut.',
     'Copy struktur HTML, CSS, class, id, JS slide navigation, chart fallback, footer, card, grid, ukuran, spacing, warna, font, dan 11 slide dari template.',
     'Jangan redesign. Jangan merapikan ulang. Jangan membuat layout baru. Jangan membuat versi ringkas. Jangan menambah section baru.',
-    'Jangan menambah slide/section baru, tetapi Slide 4 wajib membaca seluruh data post periode ini, bukan hanya Top 3.',
-    'Yang boleh diganti hanya isi konten: teks, angka, insight, judul post, metric, href link IG, alt text, jumlah card/post preview sesuai data, dan path thumbnail jika periodenya berbeda.',
+    'Jangan tampilkan daftar semua post di dalam report.',
+    'Yang boleh diganti hanya isi konten: teks, angka, insight, judul Top/Bottom post, metric, href link IG, alt text, dan path thumbnail jika periodenya berbeda.',
     '',
     '// STRUKTUR SLIDE WAJIB SAMA SEPERTI TEMPLATE',
     'Slide 1: Cover',
@@ -2111,14 +2089,13 @@ function buildReportPrompt(data, compData, periodLabel, config) {
     'Contoh benar: <img src="./assets/thumb-top-1.jpg">',
     'Contoh salah: <img src="Downloads/Client SMM/.../assets/thumb-top-1.jpg">',
     '',
-    'Nama file thumbnail Top/Bottom wajib tetap:',
+    'Nama file thumbnail wajib tetap:',
     '- ./assets/thumb-top-1.jpg',
     '- ./assets/thumb-top-2.jpg',
     '- ./assets/thumb-top-3.jpg',
     '- ./assets/thumb-bottom-1.jpg',
     '- ./assets/thumb-bottom-2.jpg',
     '- ./assets/thumb-bottom-3.jpg',
-    'Untuk Slide 4/Post Overview, jika ada lebih dari 3 post, boleh pakai pola asset tambahan: ./assets/post-1.jpg, ./assets/post-2.jpg, dst. Jika asset belum ada, tetap gunakan placeholder/template tanpa menghapus datanya.',
     'Nama file matrix wajib tetap:',
     '- ./assets/matrix-pillar-angle.png',
     '- ./assets/matrix-hook-angle.png',
@@ -2158,13 +2135,9 @@ function buildReportPrompt(data, compData, periodLabel, config) {
     'Carousel: ' + carouselCount,
     'Single Banner: ' + bannerCount,
     'PENTING: Slide 4 tetap seperti template: metric cards + format distribution/donut + insight + preview thumbnail grid.',
-    'BUGFIX: jangan batasi Slide 4 menjadi 3 post. Total post periode ini wajib terbaca sebagai ' + cur.totalPosts + ' post.',
-    'Jika template punya grid/list post overview, tampilkan semua post periode ini atau sebanyak ruang template memungkinkan. Jangan hanya ambil Top 3.',
-    'Gunakan daftar DATA SEMUA POST PERIODE INI di bawah untuk isi Post Overview. Top 3 hanya untuk Slide 5.',
+    'Jangan tampilkan daftar semua post di Slide 4.',
+    'Preview thumbnail grid tetap memakai asset lokal Top 3 dari template.',
     'Insight: tulis <100 kata di box insight template.',
-    '',
-    'DATA SEMUA POST PERIODE INI — WAJIB DIPAKAI, JANGAN DIPOTONG JADI 3:',
-    allPostLines,
     '',
     'SLIDE 5 — TOP 3 POSTS BY REACH',
     rankedOrPlaceholder(top3Posts, 'top'),
@@ -2202,8 +2175,7 @@ function buildReportPrompt(data, compData, periodLabel, config) {
     'Footer brand: ' + config.footerBrand + ' · ' + config.footerUrl,
     '',
     '// CHECKLIST WAJIB SEBELUM FINAL',
-    '- Total posts di report sama dengan data periode, bukan otomatis 3.',
-    '- Slide 4/Post Overview memakai data semua post periode sesuai ruang template, bukan hanya Top 3.',
+    '- Tidak ada daftar semua post yang tampil di HTML report.',
     '- Tidak ada slide/section tambahan.',
     '- Tidak ada desain baru.',
     '- Top 3 dan Bottom 3 tetap berbentuk card seperti template.',
