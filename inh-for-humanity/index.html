@@ -523,8 +523,8 @@ var CLIENT_CONFIG = {
   "name": "INH for Humanity",
   "slug": "inh-for-humanity",
   "sheetId": "1Lu6Dp0MuYgc4mtLbtYUce4pXWrSVOiwqSCxpHXk8ZcE",
-  "gid": "1193825849",
-  "tabName": "Content Creation Framework",
+  "gid": "885361054",
+  "tabName": "Analisa Konten .. ..",
   "tabCandidates": [
     "Content Creation Framework",
     "Content Creation Framework(1)",
@@ -595,17 +595,54 @@ function buildMonthRanges(data) {
   MONTH_RANGES = months;
 }
 
-async function fetchSheetData() {
+function quoteA1SheetName(name) {
+  return "'" + String(name || '').replace(/'/g, "''") + "'!A:ZZ";
+}
+
+async function fetchSpreadsheetMeta() {
   var url = 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID +
-    '/values/' + encodeURIComponent(TAB_NAME) +
-    '?key=' + API_KEY;
+    '?fields=sheets.properties(sheetId,title)&key=' + API_KEY;
   var resp = await fetch(url);
   if (!resp.ok) {
     var errData = await resp.json().catch(function(){return {};});
-    throw new Error('HTTP ' + resp.status + ': ' + (errData.error && errData.error.message ? errData.error.message : resp.statusText));
+    throw new Error('Gagal ambil metadata spreadsheet: HTTP ' + resp.status + ' — ' + (errData.error && errData.error.message ? errData.error.message : resp.statusText));
   }
-  var data = await resp.json();
-  return data;
+  return await resp.json();
+}
+
+async function resolveTabNameByGid() {
+  var targetGid = String(CLIENT_CONFIG.gid || SHEET_GID || '').trim();
+  if (!targetGid) return CLIENT_CONFIG.tabName || TAB_NAME;
+
+  var meta = await fetchSpreadsheetMeta();
+  var sheets = meta.sheets || [];
+  var found = sheets.find(function(s) {
+    return String(s.properties && s.properties.sheetId) === targetGid;
+  });
+
+  if (!found) {
+    var available = sheets.map(function(s){ return (s.properties && s.properties.title) || ''; }).filter(Boolean).join(', ');
+    throw new Error('Tab dengan gid ' + targetGid + ' tidak ditemukan. Tab tersedia: ' + available);
+  }
+
+  CLIENT_CONFIG.resolvedTabName = found.properties.title;
+  return found.properties.title;
+}
+
+async function fetchSheetData(tabName) {
+  var safeTab = tabName || TAB_NAME || CLIENT_CONFIG.tabName;
+  var range = quoteA1SheetName(safeTab);
+  var url = 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID +
+    '/values/' + encodeURIComponent(range) +
+    '?valueRenderOption=UNFORMATTED_VALUE' +
+    '&dateTimeRenderOption=SERIAL_NUMBER' +
+    '&key=' + API_KEY;
+  var resp = await fetch(url);
+  if (!resp.ok) {
+    var errData = await resp.json().catch(function(){return {};});
+    throw new Error('Gagal fetch tab "' + safeTab + '": HTTP ' + resp.status + ' — ' + (errData.error && errData.error.message ? errData.error.message : resp.statusText));
+  }
+  return await resp.json();
 }
 
 function parseMetric(val) {
@@ -770,43 +807,42 @@ async function loadData() {
   var overlay = document.getElementById('loading-overlay');
   var loadingText = document.getElementById('loading-text');
   if (overlay) overlay.classList.remove('hidden');
-  if (loadingText) { loadingText.style.display = ''; loadingText.textContent = 'Mengambil data dari Google Sheets...'; }
+  if (loadingText) { loadingText.style.display = ''; loadingText.textContent = 'Mengambil data dari tab analytics...'; }
+
   try {
-    var candidates = CLIENT_CONFIG.tabCandidates || [TAB_NAME];
-    var best = {rows: [], score: -1, tab: TAB_NAME};
-    var lastError = null;
+    var resolvedTab = await resolveTabNameByGid();
+    TAB_NAME = resolvedTab;
 
-    for (var ti = 0; ti < candidates.length; ti++) {
-      try {
-        TAB_NAME = candidates[ti];
-        var raw = await fetchSheetData();
-        var rows = parseSheetData(raw);
-        if (!rows.length) continue;
+    var raw = await fetchSheetData(resolvedTab);
+    var parsed = parseSheetData(raw);
 
-        // Pilih tab yang paling layak untuk analytics: utamakan data yang punya Reach.
-        // Ini mencegah dashboard memakai CCF kosong/plan jika ada sheet Analisa Konten yang lebih lengkap.
-        var withReach = rows.filter(function(x){ return x.r > 0; }).length;
-        var score = (withReach * 1000) + rows.length;
-        if (score > best.score) {
-          best = {rows: rows, score: score, tab: TAB_NAME};
-        }
-      } catch(err) {
-        lastError = err;
-      }
-    }
-
-    var parsed = best.rows;
     if (!parsed.length && STATIC_DATA && STATIC_DATA.length) {
       parsed = STATIC_DATA.map(function(x){ return Object.assign({}, x); });
-      best.tab = 'STATIC_DATA';
+      resolvedTab = 'STATIC_DATA';
     }
-    if (parsed.length === 0) throw new Error(lastError ? lastError.message : 'Tidak ada data valid pada Google Sheets.');
 
-    CLIENT_CONFIG.activeTab = best.tab;
+    if (!parsed.length) {
+      throw new Error('Tidak ada data valid pada tab sumber: ' + resolvedTab);
+    }
+
+    CLIENT_CONFIG.activeTab = resolvedTab;
     P_ALL = parsed;
-    P_ALL.forEach(function(x){ x.dateObj = new Date(x.d + 'T00:00:00'); });
+    P_ALL.forEach(function(x){
+      x.sourceTab = resolvedTab;
+      x.dateObj = new Date(x.d + 'T00:00:00');
+    });
     P_ALL = P_ALL.filter(function(x){ return x.dateObj && !isNaN(x.dateObj.getTime()); });
     P_ALL.sort(function(a,b){ return a.dateObj - b.dateObj; });
+
+    console.log('[CCF Dashboard] Source sheetId:', SHEET_ID);
+    console.log('[CCF Dashboard] Source gid:', CLIENT_CONFIG.gid);
+    console.log('[CCF Dashboard] Source tab:', CLIENT_CONFIG.activeTab);
+    console.log('[CCF Dashboard] Total parsed rows:', P_ALL.length);
+    console.log('[CCF Dashboard] Rows by month:', P_ALL.reduce(function(acc, x) {
+      var ym = x.d.slice(0,7);
+      acc[ym] = (acc[ym] || 0) + 1;
+      return acc;
+    }, {}));
 
     applyDashboardDateFilter(null, null, 'all', true);
     if (overlay) overlay.classList.add('hidden');
