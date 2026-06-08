@@ -524,6 +524,8 @@ var CLIENT_CONFIG = {
   "slug": "inh-for-humanity",
   "sheetId": "1Lu6Dp0MuYgc4mtLbtYUce4pXWrSVOiwqSCxpHXk8ZcE",
   "gid": "885361054",
+  "dateSlashOrder": "MDY",
+  "dateParseMode": "hybrid",
   "tabName": "Analisa Konten .. ..",
   "tabCandidates": [
     "Content Creation Framework",
@@ -722,51 +724,110 @@ function parseSheetData(raw) {
     }
   }
 
-  var result = [];
+  // First pass: collect rows and possible date candidates.
+  // This lets the dashboard resolve mixed DD/MM/YYYY and MM/DD/YYYY using row context.
+  var pending = [];
   for (var r = dataStart; r < rows.length; r++) {
     var row = rows[r];
     if (!row || row.length === 0) continue;
-    var dateVal = iDate >= 0 ? String(row[iDate]||'').trim() : '';
-    var topik   = iTopik >= 0 ? (row[iTopik]||'') : '';
+    var dateValRaw = iDate >= 0 ? row[iDate] : '';
+    var dateVal = dateValRaw === null || dateValRaw === undefined ? '' : String(dateValRaw).trim();
+    var topik = iTopik >= 0 ? (row[iTopik]||'') : '';
     if (!dateVal && !topik) continue;
 
-    var parsedDate = parseDate(dateVal);
-    if (!parsedDate) continue;
+    var candidates = getDateCandidates(dateValRaw);
+    if (!candidates.length) continue;
 
-    // Keep rows even when performance metrics are still blank.
-    // Blank reach is treated as 0 so dashboard can still filter dates/months.
     var reachRaw = iReach >= 0 ? String(row[iReach]||'').trim() : '';
     var reach = parseMetric(reachRaw);
 
-    var likes    = iLikes    >= 0 ? parseMetric(row[iLikes])    : 0;
-    var comments = iComments >= 0 ? parseMetric(row[iComments]) : 0;
-    var shares   = iShares   >= 0 ? parseMetric(row[iShares])   : 0;
-    var saves    = iSaves    >= 0 ? parseMetric(row[iSaves])    : 0;
-    result.push({
+    pending.push({
+      rowIndex: r + 1,
+      rawDate: dateVal,
+      dateCandidates: candidates,
       t: topik,
-      d: parsedDate,
       p: iPillar >= 0 ? (row[iPillar]||'') : '',
       h: iHook >= 0 ? (row[iHook]||'') : '',
       a: iAngle >= 0 ? (row[iAngle]||'') : '',
       r: reach,
-      lk: likes,
-      cm: comments,
-      sh: shares,
-      sv: saves,
+      lk: iLikes    >= 0 ? parseMetric(row[iLikes])    : 0,
+      cm: iComments >= 0 ? parseMetric(row[iComments]) : 0,
+      sh: iShares   >= 0 ? parseMetric(row[iShares])   : 0,
+      sv: iSaves    >= 0 ? parseMetric(row[iSaves])    : 0,
       url: iURL >= 0 ? (row[iURL]||'') : '',
       asset: iAsset >= 0 ? (row[iAsset]||'') : '',
       channel: iChannel >= 0 ? (row[iChannel]||'') : '',
       medium: iMedium >= 0 ? (row[iMedium]||'') : ''
     });
   }
+
+  var resolved = resolveMixedDateCandidates(pending);
+  var result = [];
+  for (var j = 0; j < resolved.length; j++) {
+    var item = resolved[j];
+    if (!item.d) continue;
+    result.push({
+      t: item.t,
+      d: item.d,
+      rawDate: item.rawDate,
+      dateParseOrder: item.dateParseOrder || '',
+      dateParseSource: item.dateParseSource || '',
+      dateParseConfidence: item.dateParseConfidence || '',
+      p: item.p,
+      h: item.h,
+      a: item.a,
+      r: item.r,
+      lk: item.lk,
+      cm: item.cm,
+      sh: item.sh,
+      sv: item.sv,
+      url: item.url,
+      asset: item.asset,
+      channel: item.channel,
+      medium: item.medium
+    });
+  }
   return result;
 }
 
-function parseDate(val) {
-  if (!val) return null;
-  val = String(val).trim();
+function pad2(n) { return String(n).padStart(2, '0'); }
+
+function validYMD(year, month, day) {
+  if (!year || month < 1 || month > 12 || day < 1 || day > 31) return false;
+  var d = new Date(Number(year), month - 1, day);
+  return d.getFullYear() === Number(year) && d.getMonth() === month - 1 && d.getDate() === day;
+}
+
+function ymdToISO(year, month, day) {
+  if (!validYMD(year, month, day)) return null;
+  return String(year) + '-' + pad2(month) + '-' + pad2(day);
+}
+
+function isoToTime(iso) { return new Date(iso + 'T00:00:00').getTime(); }
+
+function getDateCandidates(val) {
+  if (val === null || val === undefined || val === '') return [];
+
+  // Google Sheets serial number is the safest form when available.
+  if (typeof val === 'number' && isFinite(val) && val > 40000) {
+    var sd = new Date((val - 25569) * 86400 * 1000);
+    return [{d: sd.toISOString().slice(0,10), order: 'SERIAL', source: 'serial', confidence: 'high'}];
+  }
+
+  var s = String(val).trim();
+  if (!s) return [];
+
   // ISO format YYYY-MM-DD
-  if (/^\d{4}-\d{2}-\d{2}/.test(val)) return val.slice(0,10);
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    return [{d: s.slice(0,10), order: 'ISO', source: 'iso', confidence: 'high'}];
+  }
+
+  // Google Sheets serial number in string form
+  var serial = Number(s);
+  if (!isNaN(serial) && serial > 40000 && /^\d+(\.\d+)?$/.test(s)) {
+    var dSerial = new Date((serial - 25569) * 86400 * 1000);
+    return [{d: dSerial.toISOString().slice(0,10), order: 'SERIAL', source: 'serial', confidence: 'high'}];
+  }
 
   // Indonesian month names: "11 Mei 2026", "5 Januari 2026", etc.
   var ID_MONTHS = {
@@ -774,33 +835,145 @@ function parseDate(val) {
     juli:7,agustus:8,september:9,oktober:10,november:11,desember:12,
     jan:1,feb:2,mar:3,apr:4,jun:6,jul:7,ags:8,sep:9,okt:10,nov:11,des:12
   };
-  var idMatch = val.toLowerCase().match(/^(\d{1,2})\s+([a-z]+)\s+(\d{4})/);
+  var idMatch = s.toLowerCase().match(/^(\d{1,2})\s+([a-z]+)\s+(\d{4})/);
   if (idMatch) {
     var mNum = ID_MONTHS[idMatch[2]];
-    if (mNum) return idMatch[3] + '-' + String(mNum).padStart(2,'0') + '-' + idMatch[1].padStart(2,'0');
+    var isoId = mNum ? ymdToISO(idMatch[3], mNum, parseInt(idMatch[1], 10)) : null;
+    return isoId ? [{d: isoId, order: 'DMY_TEXT', source: 'text-month', confidence: 'high'}] : [];
   }
 
-  // DD/MM/YYYY — data CCF Indonesia: "01/05/2026" = 1 Mei 2026
-  // Penting: jangan treat sebagai MM/DD karena akan membuat filter bulan tidak akurat.
-  var dmySlash = val.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  if (dmySlash) {
-    var day = parseInt(dmySlash[1], 10);
-    var month = parseInt(dmySlash[2], 10);
-    var yr = dmySlash[3];
-    return yr + '-' + String(month).padStart(2,'0') + '-' + String(day).padStart(2,'0');
+  // Slash dates can be mixed in the same tab. Return every valid candidate.
+  var slash = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (slash) {
+    var a = parseInt(slash[1], 10);
+    var b = parseInt(slash[2], 10);
+    var yr = slash[3];
+    var out = [];
+    var isoMDY = ymdToISO(yr, a, b);
+    var isoDMY = ymdToISO(yr, b, a);
+    var defaultOrder = String(CLIENT_CONFIG.dateSlashOrder || 'MDY').toUpperCase();
+
+    if (isoMDY) out.push({d: isoMDY, order: 'MDY', source: (isoDMY && isoDMY !== isoMDY) ? 'slash-ambiguous' : 'slash', confidence: isoDMY && isoDMY !== isoMDY ? 'medium' : 'high'});
+    if (isoDMY && isoDMY !== isoMDY) out.push({d: isoDMY, order: 'DMY', source: 'slash-ambiguous', confidence: 'medium'});
+
+    // Put the client's default order first, but the resolver can still override it by row context.
+    out.sort(function(x, y) {
+      return (x.order === defaultOrder ? -1 : 1) - (y.order === defaultOrder ? -1 : 1);
+    });
+    return out;
   }
 
-  // DD-MM-YYYY
-  var dmy = val.match(/^(\d{1,2})-(\d{1,2})-(\d{4})/);
-  if (dmy) return dmy[3] + '-' + dmy[2].padStart(2,'0') + '-' + dmy[1].padStart(2,'0');
-
-  // Google Sheets serial number
-  var n = parseInt(val);
-  if (!isNaN(n) && n > 40000) {
-    var d = new Date((n - 25569) * 86400 * 1000);
-    return d.toISOString().slice(0,10);
+  // Dash dates are usually DMY in Indonesian CCF exports.
+  var dash = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})/);
+  if (dash) {
+    var isoDash = ymdToISO(dash[3], parseInt(dash[2], 10), parseInt(dash[1], 10));
+    return isoDash ? [{d: isoDash, order: 'DMY_DASH', source: 'dash', confidence: 'high'}] : [];
   }
-  return null;
+
+  return [];
+}
+
+function resolveMixedDateCandidates(items) {
+  if (!items || !items.length) return [];
+
+  var defaultOrder = String(CLIENT_CONFIG.dateSlashOrder || 'MDY').toUpperCase();
+  var n = items.length;
+  var dp = [];
+  var back = [];
+
+  function candidateBaseCost(c) {
+    if (c.source === 'slash-ambiguous') {
+      // Default order is a hint, not a rule. Row chronology can override it.
+      return c.order === defaultOrder ? 0.15 : 0.45;
+    }
+    return 0;
+  }
+
+  function transitionCost(prev, cur) {
+    var diffDays = Math.round((isoToTime(cur.d) - isoToTime(prev.d)) / 86400000);
+    // The analysis tab is normally chronological. Strongly punish large backwards jumps.
+    if (diffDays < -60) return 10000 + Math.abs(diffDays) * 12;
+    if (diffDays < -14) return 4000 + Math.abs(diffDays) * 8;
+    if (diffDays < -3) return 800 + Math.abs(diffDays) * 20;
+    if (diffDays < 0) return 60 + Math.abs(diffDays) * 20;
+    // Forward movement is expected; very large jumps are allowed but less preferred.
+    if (diffDays > 90) return diffDays * 1.5;
+    if (diffDays > 45) return diffDays * 0.8;
+    if (diffDays > 14) return diffDays * 0.2;
+    return diffDays * 0.02;
+  }
+
+  for (var i = 0; i < n; i++) {
+    var cands = items[i].dateCandidates || [];
+    dp[i] = [];
+    back[i] = [];
+    for (var j = 0; j < cands.length; j++) {
+      var base = candidateBaseCost(cands[j]);
+      if (i === 0) {
+        dp[i][j] = base;
+        back[i][j] = -1;
+      } else {
+        var bestScore = Infinity;
+        var bestPrev = 0;
+        for (var k = 0; k < (items[i-1].dateCandidates || []).length; k++) {
+          var prevScore = dp[i-1][k];
+          var score = prevScore + transitionCost(items[i-1].dateCandidates[k], cands[j]) + base;
+          if (score < bestScore) {
+            bestScore = score;
+            bestPrev = k;
+          }
+        }
+        dp[i][j] = bestScore;
+        back[i][j] = bestPrev;
+      }
+    }
+  }
+
+  var lastIdx = 0;
+  var lastBest = Infinity;
+  for (var z = 0; z < dp[n-1].length; z++) {
+    if (dp[n-1][z] < lastBest) {
+      lastBest = dp[n-1][z];
+      lastIdx = z;
+    }
+  }
+
+  var chosen = new Array(n);
+  for (var ii = n - 1, cj = lastIdx; ii >= 0; ii--) {
+    chosen[ii] = cj;
+    cj = back[ii][cj];
+    if (cj === undefined || cj < 0) cj = 0;
+  }
+
+  var ambiguousCount = 0;
+  var overriddenCount = 0;
+  for (var x = 0; x < n; x++) {
+    var chosenCandidate = items[x].dateCandidates[chosen[x]] || items[x].dateCandidates[0];
+    var defaultCandidate = items[x].dateCandidates[0];
+    items[x].d = chosenCandidate.d;
+    items[x].dateParseOrder = chosenCandidate.order;
+    items[x].dateParseSource = chosenCandidate.source;
+    items[x].dateParseConfidence = chosenCandidate.confidence;
+    if (items[x].dateCandidates.length > 1) {
+      ambiguousCount++;
+      if (chosenCandidate.d !== defaultCandidate.d) overriddenCount++;
+    }
+  }
+
+  CLIENT_CONFIG.dateParseStats = {
+    mode: 'hybrid',
+    defaultOrder: defaultOrder,
+    ambiguousRows: ambiguousCount,
+    contextOverrides: overriddenCount
+  };
+
+  return items;
+}
+
+// Backward-compatible helper. Main parser now uses getDateCandidates + resolveMixedDateCandidates.
+function parseDate(val) {
+  var candidates = getDateCandidates(val);
+  return candidates.length ? candidates[0].d : null;
 }
 
 async function loadData() {
@@ -837,6 +1010,9 @@ async function loadData() {
     console.log('[CCF Dashboard] Source sheetId:', SHEET_ID);
     console.log('[CCF Dashboard] Source gid:', CLIENT_CONFIG.gid);
     console.log('[CCF Dashboard] Source tab:', CLIENT_CONFIG.activeTab);
+    console.log('[CCF Dashboard] Date parser:', CLIENT_CONFIG.dateParseMode || 'hybrid');
+    console.log('[CCF Dashboard] Slash date default order:', CLIENT_CONFIG.dateSlashOrder || 'MDY');
+    console.log('[CCF Dashboard] Date parse stats:', CLIENT_CONFIG.dateParseStats || {});
     console.log('[CCF Dashboard] Total parsed rows:', P_ALL.length);
     console.log('[CCF Dashboard] Rows by month:', P_ALL.reduce(function(acc, x) {
       var ym = x.d.slice(0,7);
