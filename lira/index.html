@@ -524,7 +524,7 @@ var CLIENT_CONFIG = {
   "slug": "lira",
   "sheetId": "1_SMgLhsDWwRFQz2dSNVqr6GgalxsPxmDd19axPgUviI",
   "gid": "885361054",
-  "tabName": "Content Creation Framework",
+  "tabName": "Analisa Konten .. ..",
   "tabCandidates": [
     "Content Creation Framework",
     "Content Creation Framework(1)",
@@ -541,6 +541,10 @@ var CLIENT_CONFIG = {
     "Analisa Konten",
     "Sheet1"
   ],
+  "baseTabs": ["CCF"],
+  "analyticsTab": "Analisa Konten .. ..",
+  "dataScopeMode": "analytics-primary-all-history",
+  "dateSlashOrder": "MDY",
   "niche": "brand/client Lira",
   "claudeProjectUrl": "https://claude.ai/project/019e49cc-fcce-7306-9d26-3b13e563eebb",
   "reportTemplateFile": "Report.html",
@@ -583,7 +587,8 @@ function buildMonthRanges(data) {
   var months = {};
   data.forEach(function(x) {
     if (!x.d) return;
-    var dt = new Date(x.d);
+    var dt = new Date(x.d + 'T00:00:00');
+    if (isNaN(dt.getTime())) return;
     var y = dt.getFullYear();
     var m = dt.getMonth();
     var key = ['jan','feb','mar','apr','mei','jun','jul','ags','sep','okt','nov','des'][m];
@@ -595,17 +600,30 @@ function buildMonthRanges(data) {
   MONTH_RANGES = months;
 }
 
-async function fetchSheetData() {
+function quoteA1SheetName(name) {
+  return "'" + String(name || '').replace(/'/g, "''") + "'";
+}
+
+async function fetchSheetRangeByName(sheetName, renderOpt) {
+  var range = quoteA1SheetName(sheetName) + '!A:ZZ';
   var url = 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID +
-    '/values/' + encodeURIComponent(TAB_NAME) +
-    '?key=' + API_KEY;
+    '/values/' + encodeURIComponent(range) +
+    '?valueRenderOption=' + encodeURIComponent(renderOpt || 'UNFORMATTED_VALUE') +
+    '&dateTimeRenderOption=SERIAL_NUMBER' +
+    '&key=' + API_KEY;
+
   var resp = await fetch(url);
   if (!resp.ok) {
     var errData = await resp.json().catch(function(){return {};});
-    throw new Error('HTTP ' + resp.status + ': ' + (errData.error && errData.error.message ? errData.error.message : resp.statusText));
+    throw new Error('Gagal fetch tab ' + sheetName + ' · HTTP ' + resp.status + ': ' +
+      (errData.error && errData.error.message ? errData.error.message : resp.statusText));
   }
-  var data = await resp.json();
-  return data;
+  return await resp.json();
+}
+
+// Backward compatible wrapper for old calls.
+async function fetchSheetData() {
+  return await fetchSheetRangeByName(TAB_NAME || CLIENT_CONFIG.tabName || 'CCF', 'UNFORMATTED_VALUE');
 }
 
 function parseMetric(val) {
@@ -619,11 +637,8 @@ function parseMetric(val) {
     return Math.round(parseFloat(kMatch[1].replace(',', '.')) * 1000) || 0;
   }
 
-  // Remove currency labels without treating decimals as thousands. Example: IDR45.00 => 45
   s = s.replace(/idr|rp/gi, '').trim();
   s = s.replace(/\s+/g, '');
-
-  // Thousand separators: 23.424 / 23,424 / 105,451
   if (/^\d{1,3}([\.,]\d{3})+$/.test(s)) {
     return parseInt(s.replace(/[\.,]/g, ''), 10) || 0;
   }
@@ -633,24 +648,43 @@ function parseMetric(val) {
   return isNaN(n) ? 0 : Math.round(n);
 }
 
-function parseSheetData(raw) {
+function normalizeTextKey(v) {
+  return String(v || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[“”"']/g, '')
+    .trim();
+}
+
+function normalizeUrlKey(v) {
+  var s = String(v || '').trim();
+  if (!s) return '';
+  s = s.replace(/\s+/g, '');
+  s = s.replace(/[?#].*$/, '');
+  s = s.replace(/\/$/, '');
+  return s.toLowerCase();
+}
+
+function hasMetricData(x) {
+  return !!x && ((x.r||0) > 0 || (x.lk||0) > 0 || (x.cm||0) > 0 || (x.sh||0) > 0 || (x.sv||0) > 0 || (x.views||0) > 0);
+}
+
+function parseSheetData(raw, sourceTab) {
   var rows = raw.values || [];
   if (rows.length < 2) return [];
 
-  // Auto-detect header row: look for row containing 'Date' AND 'Topik'/'Reach'
-  // Sheet has a merged title row at index 0, real headers at index 1, instruction row at index 2
+  // Auto-detect header row: look for row containing Date + several CCF/performance headers.
   var headerRowIdx = -1;
-  var HEADER_KEYWORDS = ['date', 'topik', 'reach', 'content pillar', 'creative id'];
-  for (var ri = 0; ri < Math.min(rows.length, 5); ri++) {
+  var HEADER_KEYWORDS = ['date', 'topik', 'reach', 'content pillar', 'creative id', 'link publish'];
+  for (var ri = 0; ri < Math.min(rows.length, 8); ri++) {
     var rowLower = (rows[ri] || []).map(function(c){ return String(c||'').toLowerCase().trim(); });
     var hits = HEADER_KEYWORDS.filter(function(k){ return rowLower.indexOf(k) !== -1; }).length;
     if (hits >= 3) { headerRowIdx = ri; break; }
   }
   if (headerRowIdx === -1) return [];
 
-  var headers = rows[headerRowIdx].map(function(h){ return (h||'').trim(); });
+  var headers = rows[headerRowIdx].map(function(h){ return String(h||'').trim(); });
 
-  // Column mapping
   function col(names) {
     for (var i = 0; i < names.length; i++) {
       var idx = headers.findIndex(function(h){ return h.toLowerCase() === names[i].toLowerCase(); });
@@ -659,27 +693,29 @@ function parseSheetData(raw) {
     return -1;
   }
 
-  var iDate    = col(['Date','Tanggal','date']);
-  var iTopik   = col(['Topik','topik','Topic','title']);
-  var iPillar  = col(['Content Pillar','Pillar','pillar','content pillar']);
-  var iHook    = col(['Jenis Hook','jenis hook','Hook Type','hook type']);
-  var iAngle   = col(['Angle','angle','Content Angle']);
-  var iReach   = col(['Reach','reach','Total Reach','total reach']);
-  var iLikes   = col(['Like','Likes','likes','Total Likes']);
-  var iComments= col(['Comment','Comments','comments','Komentar','komentar']);
-  var iShares  = col(['Share','Shares','shares','Dibagikan']);
-  var iSaves   = col(['Save','Saves','saves','Simpan']);
-  var iURL     = col(['Link Publish','URL','url','Link','link','Post URL']);
-  var iAsset   = col(['Asset Photo / Video','Asset Photo/Video','Asset','Asset Photo','Asset Video','Thumbnail','Image']);
-  var iChannel = col(['Channel','channel']);
-  var iMedium  = col(['Medium','medium','Format','format']);
+  var iDate     = col(['Date','Tanggal','date']);
+  var iDateISO  = col(['Date ISO','ISO Date','Tanggal ISO']);
+  var iTopik    = col(['Topik','topik','Topic','title']);
+  var iPillar   = col(['Content Pillar','Pillar','pillar','content pillar']);
+  var iHook     = col(['Jenis Hook','jenis hook','Hook Type','hook type']);
+  var iAngle    = col(['Angle','angle','Content Angle']);
+  var iReach    = col(['Reach','reach','Total Reach','total reach']);
+  var iViews    = col(['Views','View','views','view']);
+  var iLikes    = col(['Like','Likes','likes','Total Likes']);
+  var iComments = col(['Comment','Comments','comments','Komentar','komentar']);
+  var iShares   = col(['Share','Shares','shares','Dibagikan']);
+  var iSaves    = col(['Save','Saves','saves','Simpan']);
+  var iURL      = col(['Link Publish','URL','url','Link','link','Post URL']);
+  var iAsset    = col(['Asset Photo / Video','Asset Photo/Video','Asset','Asset Photo','Asset Video','Thumbnail','Image']);
+  var iChannel  = col(['Channel','channel']);
+  var iMedium   = col(['Medium','medium','Format','format']);
+  var iStatus   = col(['Creative Status','Status','Checklist Posting','Checklis Posting']);
+  var iCaption  = col(['Caption','caption']);
 
-  // Data starts after header row; skip any instruction/description row immediately after
   var dataStart = headerRowIdx + 1;
   if (dataStart < rows.length) {
     var nextRow = rows[dataStart] || [];
     var nextDate = iDate >= 0 ? String(nextRow[iDate]||'').trim() : '';
-    // If date cell looks like a long instruction string, skip this row
     if (nextDate.length > 25 || nextDate.toLowerCase().indexOf('isi') !== -1 || nextDate.toLowerCase().indexOf('tanggal') !== -1) {
       dataStart++;
     }
@@ -689,49 +725,70 @@ function parseSheetData(raw) {
   for (var r = dataStart; r < rows.length; r++) {
     var row = rows[r];
     if (!row || row.length === 0) continue;
-    var dateVal = iDate >= 0 ? String(row[iDate]||'').trim() : '';
-    var topik   = iTopik >= 0 ? (row[iTopik]||'') : '';
-    if (!dateVal && !topik) continue;
+
+    var dateVal = '';
+    if (iDateISO >= 0 && row[iDateISO] !== undefined && row[iDateISO] !== '') {
+      dateVal = row[iDateISO];
+    } else if (iDate >= 0) {
+      dateVal = row[iDate];
+    }
+
+    var topik = iTopik >= 0 ? String(row[iTopik] || '').trim() : '';
+    var url = iURL >= 0 ? String(row[iURL] || '').trim() : '';
+    var caption = iCaption >= 0 ? String(row[iCaption] || '').trim() : '';
+    var status = iStatus >= 0 ? String(row[iStatus] || '').trim() : '';
+    var pillar = iPillar >= 0 ? String(row[iPillar] || '').trim() : '';
+    var hook = iHook >= 0 ? String(row[iHook] || '').trim() : '';
+    var angle = iAngle >= 0 ? String(row[iAngle] || '').trim() : '';
+
+    // Official CCF scope: keep any real content row with a valid date and any content signal.
+    if (!dateVal || (!topik && !url && !caption && !status && !pillar && !hook && !angle)) continue;
 
     var parsedDate = parseDate(dateVal);
     if (!parsedDate) continue;
 
-    // Keep rows even when performance metrics are still blank.
-    // Blank reach is treated as 0 so dashboard can still filter dates/months.
-    var reachRaw = iReach >= 0 ? String(row[iReach]||'').trim() : '';
-    var reach = parseMetric(reachRaw);
+    var title = topik || caption || hook || url || ('Untitled row ' + (r + 1));
+    if (title.length > 120) title = title.slice(0, 117) + '...';
 
-    var likes    = iLikes    >= 0 ? parseMetric(row[iLikes])    : 0;
-    var comments = iComments >= 0 ? parseMetric(row[iComments]) : 0;
-    var shares   = iShares   >= 0 ? parseMetric(row[iShares])   : 0;
-    var saves    = iSaves    >= 0 ? parseMetric(row[iSaves])    : 0;
     result.push({
-      t: topik,
+      t: title,
       d: parsedDate,
-      p: iPillar >= 0 ? (row[iPillar]||'') : '',
-      h: iHook >= 0 ? (row[iHook]||'') : '',
-      a: iAngle >= 0 ? (row[iAngle]||'') : '',
-      r: reach,
-      lk: likes,
-      cm: comments,
-      sh: shares,
-      sv: saves,
-      url: iURL >= 0 ? (row[iURL]||'') : '',
-      asset: iAsset >= 0 ? (row[iAsset]||'') : '',
-      channel: iChannel >= 0 ? (row[iChannel]||'') : '',
-      medium: iMedium >= 0 ? (row[iMedium]||'') : ''
+      p: pillar,
+      h: hook,
+      a: angle,
+      r: iReach >= 0 ? parseMetric(row[iReach]) : 0,
+      views: iViews >= 0 ? parseMetric(row[iViews]) : 0,
+      lk: iLikes >= 0 ? parseMetric(row[iLikes]) : 0,
+      cm: iComments >= 0 ? parseMetric(row[iComments]) : 0,
+      sh: iShares >= 0 ? parseMetric(row[iShares]) : 0,
+      sv: iSaves >= 0 ? parseMetric(row[iSaves]) : 0,
+      url: url,
+      asset: iAsset >= 0 ? String(row[iAsset] || '').trim() : '',
+      channel: iChannel >= 0 ? String(row[iChannel] || '').trim() : '',
+      medium: iMedium >= 0 ? String(row[iMedium] || '').trim() : '',
+      status: status,
+      sourceTab: sourceTab || '',
+      rowNumber: r + 1,
+      rawDate: dateVal
     });
   }
   return result;
 }
 
 function parseDate(val) {
-  if (!val) return null;
+  if (val === null || val === undefined || val === '') return null;
+
+  // Google Sheets serial number, safest path when the cell is a real date.
+  if (typeof val === 'number' && val > 40000) {
+    var ds = new Date((val - 25569) * 86400 * 1000);
+    return ds.toISOString().slice(0,10);
+  }
+
   val = String(val).trim();
+
   // ISO format YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}/.test(val)) return val.slice(0,10);
 
-  // Indonesian month names: "11 Mei 2026", "5 Januari 2026", etc.
   var ID_MONTHS = {
     januari:1,februari:2,maret:3,april:4,mei:5,juni:6,
     juli:7,agustus:8,september:9,oktober:10,november:11,desember:12,
@@ -740,25 +797,40 @@ function parseDate(val) {
   var idMatch = val.toLowerCase().match(/^(\d{1,2})\s+([a-z]+)\s+(\d{4})/);
   if (idMatch) {
     var mNum = ID_MONTHS[idMatch[2]];
-    if (mNum) return idMatch[3] + '-' + String(mNum).padStart(2,'0') + '-' + idMatch[1].padStart(2,'0');
+    if (mNum) return idMatch[3] + '-' + String(mNum).padStart(2,'0') + '-' + String(idMatch[1]).padStart(2,'0');
   }
 
-  // DD/MM/YYYY — data CCF Indonesia: "01/05/2026" = 1 Mei 2026
-  // Penting: jangan treat sebagai MM/DD karena akan membuat filter bulan tidak akurat.
-  var dmySlash = val.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  if (dmySlash) {
-    var day = parseInt(dmySlash[1], 10);
-    var month = parseInt(dmySlash[2], 10);
-    var yr = dmySlash[3];
-    return yr + '-' + String(month).padStart(2,'0') + '-' + String(day).padStart(2,'0');
+  var slash = val.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (slash) {
+    var a = parseInt(slash[1], 10);
+    var b = parseInt(slash[2], 10);
+    var yr = slash[3];
+    var order = (CLIENT_CONFIG.dateSlashOrder || 'DMY').toUpperCase();
+    var day, month;
+
+    // If one side is impossible as month, resolve automatically.
+    if (a > 12 && b <= 12) {
+      day = a; month = b;
+    } else if (b > 12 && a <= 12) {
+      month = a; day = b;
+    } else if (order === 'MDY') {
+      month = a; day = b;
+    } else {
+      day = a; month = b;
+    }
+
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return yr + '-' + String(month).padStart(2,'0') + '-' + String(day).padStart(2,'0');
+    }
+    return null;
   }
 
-  // DD-MM-YYYY
-  var dmy = val.match(/^(\d{1,2})-(\d{1,2})-(\d{4})/);
-  if (dmy) return dmy[3] + '-' + dmy[2].padStart(2,'0') + '-' + dmy[1].padStart(2,'0');
+  var dash = val.match(/^(\d{1,2})-(\d{1,2})-(\d{4})/);
+  if (dash) {
+    return dash[3] + '-' + String(dash[2]).padStart(2,'0') + '-' + String(dash[1]).padStart(2,'0');
+  }
 
-  // Google Sheets serial number
-  var n = parseInt(val);
+  var n = parseInt(val, 10);
   if (!isNaN(n) && n > 40000) {
     var d = new Date((n - 25569) * 86400 * 1000);
     return d.toISOString().slice(0,10);
@@ -766,52 +838,99 @@ function parseDate(val) {
   return null;
 }
 
+function buildAnalyticsIndex(rows) {
+  var idx = {byUrl: {}, byTopicDate: {}, byTopic: {}};
+  rows.forEach(function(x) {
+    var urlKey = normalizeUrlKey(x.url);
+    var topicKey = normalizeTextKey(x.t);
+    if (urlKey && !idx.byUrl[urlKey]) idx.byUrl[urlKey] = x;
+    if (topicKey && x.d && !idx.byTopicDate[topicKey + '|' + x.d]) idx.byTopicDate[topicKey + '|' + x.d] = x;
+    if (topicKey && !idx.byTopic[topicKey]) idx.byTopic[topicKey] = x;
+  });
+  return idx;
+}
+
+function mergePerformanceFromAnalytics(baseRows, analyticsRows) {
+  var idx = buildAnalyticsIndex(analyticsRows || []);
+  return baseRows.map(function(base) {
+    var urlKey = normalizeUrlKey(base.url);
+    var topicKey = normalizeTextKey(base.t);
+    var match = null;
+
+    if (urlKey && idx.byUrl[urlKey]) match = idx.byUrl[urlKey];
+    else if (topicKey && idx.byTopicDate[topicKey + '|' + base.d]) match = idx.byTopicDate[topicKey + '|' + base.d];
+    else if (topicKey && idx.byTopic[topicKey]) match = idx.byTopic[topicKey];
+
+    if (!match) return base;
+
+    var merged = Object.assign({}, base);
+    // Analytics is performance source, but do not erase existing CCF metrics with empty analytics.
+    if (hasMetricData(match) || !hasMetricData(base)) {
+      merged.r = match.r || 0;
+      merged.views = match.views || 0;
+      merged.lk = match.lk || 0;
+      merged.cm = match.cm || 0;
+      merged.sh = match.sh || 0;
+      merged.sv = match.sv || 0;
+    }
+
+    merged.url = merged.url || match.url || '';
+    merged.asset = merged.asset || match.asset || '';
+    merged.analyticsTab = match.sourceTab || '';
+    merged.analyticsRowNumber = match.rowNumber || null;
+    return merged;
+  });
+}
+
 async function loadData() {
   var overlay = document.getElementById('loading-overlay');
   var loadingText = document.getElementById('loading-text');
   if (overlay) overlay.classList.remove('hidden');
   if (loadingText) { loadingText.style.display = ''; loadingText.textContent = 'Mengambil data dari Google Sheets...'; }
+
   try {
-    var candidates = CLIENT_CONFIG.tabCandidates || [TAB_NAME];
-    var best = {rows: [], score: -1, tab: TAB_NAME};
-    var lastError = null;
+    // Lira fix:
+    // Lira's CCF tab is only the active planning scope for Mei–Juni.
+    // The user's linked gid=885361054 points to "Analisa Konten .. ..",
+    // which contains the complete historical analytics data.
+    // So this dashboard uses Analisa Konten as the primary/all-history source.
+    var analyticsTab = CLIENT_CONFIG.analyticsTab || CLIENT_CONFIG.tabName || 'Analisa Konten .. ..';
 
-    for (var ti = 0; ti < candidates.length; ti++) {
-      try {
-        TAB_NAME = candidates[ti];
-        var raw = await fetchSheetData();
-        var rows = parseSheetData(raw);
-        if (!rows.length) continue;
+    var rawAnalytics = await fetchSheetRangeByName(analyticsTab, 'UNFORMATTED_VALUE');
+    var parsed = parseSheetData(rawAnalytics, analyticsTab);
 
-        // Pilih tab yang paling layak untuk analytics: utamakan data yang punya Reach.
-        // Ini mencegah dashboard memakai CCF kosong/plan jika ada sheet Analisa Konten yang lebih lengkap.
-        var withReach = rows.filter(function(x){ return x.r > 0; }).length;
-        var score = (withReach * 1000) + rows.length;
-        if (score > best.score) {
-          best = {rows: rows, score: score, tab: TAB_NAME};
-        }
-      } catch(err) {
-        lastError = err;
-      }
+    if (!parsed.length) {
+      throw new Error('Tidak ada data valid dari tab analytics: ' + analyticsTab);
     }
 
-    var parsed = best.rows;
-    if (!parsed.length && STATIC_DATA && STATIC_DATA.length) {
-      parsed = STATIC_DATA.map(function(x){ return Object.assign({}, x); });
-      best.tab = 'STATIC_DATA';
-    }
-    if (parsed.length === 0) throw new Error(lastError ? lastError.message : 'Tidak ada data valid pada Google Sheets.');
+    CLIENT_CONFIG.activeTab = analyticsTab;
+    CLIENT_CONFIG.activeAnalyticsTab = analyticsTab;
 
-    CLIENT_CONFIG.activeTab = best.tab;
     P_ALL = parsed;
     P_ALL.forEach(function(x){ x.dateObj = new Date(x.d + 'T00:00:00'); });
     P_ALL = P_ALL.filter(function(x){ return x.dateObj && !isNaN(x.dateObj.getTime()); });
     P_ALL.sort(function(a,b){ return a.dateObj - b.dateObj; });
 
+    console.log('[CCF Dashboard] Client:', CLIENT_CONFIG.name);
+    console.log('[CCF Dashboard] Data scope: Analisa Konten primary/all history');
+    console.log('[CCF Dashboard] Source tab:', CLIENT_CONFIG.activeTab);
+    console.log('[CCF Dashboard] Linked gid:', CLIENT_CONFIG.gid);
+    console.log('[CCF Dashboard] Date parser: serial-first + slash fallback');
+    console.log('[CCF Dashboard] Slash date fallback order:', CLIENT_CONFIG.dateSlashOrder || 'MDY');
+    console.log('[CCF Dashboard] Rows by month:', P_ALL.reduce(function(acc, x) {
+      var ym = x.d.slice(0,7);
+      acc[ym] = (acc[ym] || 0) + 1;
+      return acc;
+    }, {}));
+
     applyDashboardDateFilter(null, null, 'all', true);
     if (overlay) overlay.classList.add('hidden');
   } catch(e) {
-    if (overlay) overlay.innerHTML = '<div class="error-box"><h3>Gagal Memuat Data</h3><p>' + e.message + '</p><button class="action-btn" style="margin-top:14px" onclick="location.reload()">Coba Lagi</button></div>';
+    if (overlay) {
+      overlay.innerHTML = '<div class="error-box"><h3>Gagal Memuat Data</h3><p>' +
+        e.message +
+        '</p><button class="action-btn" style="margin-top:14px" onclick="location.reload()">Coba Lagi</button></div>';
+    }
   }
 }
 
