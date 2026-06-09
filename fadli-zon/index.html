@@ -541,6 +541,10 @@ var CLIENT_CONFIG = {
     "Analisa Konten",
     "Sheet1"
   ],
+  "baseCcfTabs": ["CCF JUNI", "CCF MEI"],
+  "analyticsTabName": "Analisa Konten .. ..",
+  "analyticsGid": "885361054",
+  "dateSlashOrder": "MDY",
   "niche": "Fadli Zon",
   "claudeProjectUrl": "https://claude.ai/project/019e493e-65a4-7338-b4c3-4b9d7e96e86c",
   "reportTemplateFile": "Report.html",
@@ -595,17 +599,27 @@ function buildMonthRanges(data) {
   MONTH_RANGES = months;
 }
 
-async function fetchSheetData() {
+
+function quoteA1SheetName(name) {
+  return "'" + String(name || '').replace(/'/g, "''") + "'";
+}
+
+async function fetchSheetData(tabName) {
+  var targetTab = tabName || TAB_NAME;
+  var range = quoteA1SheetName(targetTab) + '!A:AZ';
   var url = 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID +
-    '/values/' + encodeURIComponent(TAB_NAME) +
-    '?key=' + API_KEY;
+    '/values/' + encodeURIComponent(range) +
+    '?valueRenderOption=UNFORMATTED_VALUE' +
+    '&dateTimeRenderOption=SERIAL_NUMBER' +
+    '&key=' + API_KEY;
+
   var resp = await fetch(url);
   if (!resp.ok) {
     var errData = await resp.json().catch(function(){return {};});
-    throw new Error('HTTP ' + resp.status + ': ' + (errData.error && errData.error.message ? errData.error.message : resp.statusText));
+    throw new Error('Tab "' + targetTab + '" gagal dimuat · HTTP ' + resp.status + ': ' +
+      (errData.error && errData.error.message ? errData.error.message : resp.statusText));
   }
-  var data = await resp.json();
-  return data;
+  return await resp.json();
 }
 
 function parseMetric(val) {
@@ -633,53 +647,53 @@ function parseMetric(val) {
   return isNaN(n) ? 0 : Math.round(n);
 }
 
-function parseSheetData(raw) {
+
+function parseSheetData(raw, opts) {
+  opts = opts || {};
   var rows = raw.values || [];
   if (rows.length < 2) return [];
 
-  // Auto-detect header row: look for row containing 'Date' AND 'Topik'/'Reach'
-  // Sheet has a merged title row at index 0, real headers at index 1, instruction row at index 2
   var headerRowIdx = -1;
   var HEADER_KEYWORDS = ['date', 'topik', 'reach', 'content pillar', 'creative id'];
-  for (var ri = 0; ri < Math.min(rows.length, 5); ri++) {
-    var rowLower = (rows[ri] || []).map(function(c){ return String(c||'').toLowerCase().trim(); });
+  for (var ri = 0; ri < Math.min(rows.length, 8); ri++) {
+    var rowLower = (rows[ri] || []).map(function(c){ return String(c || '').toLowerCase().trim(); });
     var hits = HEADER_KEYWORDS.filter(function(k){ return rowLower.indexOf(k) !== -1; }).length;
     if (hits >= 3) { headerRowIdx = ri; break; }
   }
   if (headerRowIdx === -1) return [];
 
-  var headers = rows[headerRowIdx].map(function(h){ return (h||'').trim(); });
+  var headers = rows[headerRowIdx].map(function(h){ return String(h || '').trim(); });
 
-  // Column mapping
   function col(names) {
     for (var i = 0; i < names.length; i++) {
-      var idx = headers.findIndex(function(h){ return h.toLowerCase() === names[i].toLowerCase(); });
+      var needle = names[i].toLowerCase();
+      var idx = headers.findIndex(function(h){ return String(h || '').toLowerCase() === needle; });
       if (idx !== -1) return idx;
     }
     return -1;
   }
 
+  var iDateIso = col(['Date ISO','ISO Date','Tanggal ISO','Tanggal Final','Final Date']);
   var iDate    = col(['Date','Tanggal','date']);
-  var iTopik   = col(['Topik','topik','Topic','title']);
-  var iPillar  = col(['Content Pillar','Pillar','pillar','content pillar']);
+  var iTopik   = col(['Topik','topik','Topic','title','Judul Konten','Judul']);
+  var iPillar  = col(['Content Pillar','Pillar','pillar','content pillar','Pilar']);
   var iHook    = col(['Jenis Hook','jenis hook','Hook Type','hook type']);
   var iAngle   = col(['Angle','angle','Content Angle']);
-  var iReach   = col(['Reach','reach','Total Reach','total reach']);
+  var iReach   = col(['Reach','reach','Total Reach','total reach','Jangkauan']);
   var iLikes   = col(['Like','Likes','likes','Total Likes']);
   var iComments= col(['Comment','Comments','comments','Komentar','komentar']);
   var iShares  = col(['Share','Shares','shares','Dibagikan']);
   var iSaves   = col(['Save','Saves','saves','Simpan']);
-  var iURL     = col(['Link Publish','URL','url','Link','link','Post URL']);
+  var iURL     = col(['Link Publish','URL','url','Link','link','Post URL','Permalink']);
   var iAsset   = col(['Asset Photo / Video','Asset Photo/Video','Asset','Asset Photo','Asset Video','Thumbnail','Image']);
   var iChannel = col(['Channel','channel']);
   var iMedium  = col(['Medium','medium','Format','format']);
+  var iStatus  = col(['Creative Status','Status','Checklis Posting','Checklist Posting']);
 
-  // Data starts after header row; skip any instruction/description row immediately after
   var dataStart = headerRowIdx + 1;
   if (dataStart < rows.length) {
     var nextRow = rows[dataStart] || [];
-    var nextDate = iDate >= 0 ? String(nextRow[iDate]||'').trim() : '';
-    // If date cell looks like a long instruction string, skip this row
+    var nextDate = iDate >= 0 ? String(nextRow[iDate] || '').trim() : '';
     if (nextDate.length > 25 || nextDate.toLowerCase().indexOf('isi') !== -1 || nextDate.toLowerCase().indexOf('tanggal') !== -1) {
       dataStart++;
     }
@@ -689,49 +703,61 @@ function parseSheetData(raw) {
   for (var r = dataStart; r < rows.length; r++) {
     var row = rows[r];
     if (!row || row.length === 0) continue;
-    var dateVal = iDate >= 0 ? String(row[iDate]||'').trim() : '';
-    var topik   = iTopik >= 0 ? (row[iTopik]||'') : '';
+
+    var isoVal  = iDateIso >= 0 ? row[iDateIso] : '';
+    var dateVal = isoVal || (iDate >= 0 ? row[iDate] : '');
+    var topik   = iTopik >= 0 ? (row[iTopik] || '') : '';
     if (!dateVal && !topik) continue;
 
     var parsedDate = parseDate(dateVal);
     if (!parsedDate) continue;
 
-    // Keep rows even when performance metrics are still blank.
-    // Blank reach is treated as 0 so dashboard can still filter dates/months.
-    var reachRaw = iReach >= 0 ? String(row[iReach]||'').trim() : '';
-    var reach = parseMetric(reachRaw);
-
-    var likes    = iLikes    >= 0 ? parseMetric(row[iLikes])    : 0;
+    var reach = iReach >= 0 ? parseMetric(row[iReach]) : 0;
+    var likes = iLikes >= 0 ? parseMetric(row[iLikes]) : 0;
     var comments = iComments >= 0 ? parseMetric(row[iComments]) : 0;
-    var shares   = iShares   >= 0 ? parseMetric(row[iShares])   : 0;
-    var saves    = iSaves    >= 0 ? parseMetric(row[iSaves])    : 0;
+    var shares = iShares >= 0 ? parseMetric(row[iShares]) : 0;
+    var saves = iSaves >= 0 ? parseMetric(row[iSaves]) : 0;
+
     result.push({
       t: topik,
       d: parsedDate,
-      p: iPillar >= 0 ? (row[iPillar]||'') : '',
-      h: iHook >= 0 ? (row[iHook]||'') : '',
-      a: iAngle >= 0 ? (row[iAngle]||'') : '',
+      p: iPillar >= 0 ? (row[iPillar] || '') : '',
+      h: iHook >= 0 ? (row[iHook] || '') : '',
+      a: iAngle >= 0 ? (row[iAngle] || '') : '',
       r: reach,
       lk: likes,
       cm: comments,
       sh: shares,
       sv: saves,
-      url: iURL >= 0 ? (row[iURL]||'') : '',
-      asset: iAsset >= 0 ? (row[iAsset]||'') : '',
-      channel: iChannel >= 0 ? (row[iChannel]||'') : '',
-      medium: iMedium >= 0 ? (row[iMedium]||'') : ''
+      url: iURL >= 0 ? (row[iURL] || '') : '',
+      asset: iAsset >= 0 ? (row[iAsset] || '') : '',
+      channel: iChannel >= 0 ? (row[iChannel] || '') : '',
+      medium: iMedium >= 0 ? (row[iMedium] || '') : '',
+      status: iStatus >= 0 ? (row[iStatus] || '') : '',
+      sourceTab: opts.sourceTab || '',
+      sourceRole: opts.sourceRole || ''
     });
   }
   return result;
 }
 
+
 function parseDate(val) {
-  if (!val) return null;
+  if (val === null || val === undefined || val === '') return null;
+
+  if (typeof val === 'number') {
+    if (val > 40000) {
+      var dn = new Date((val - 25569) * 86400 * 1000);
+      return dn.toISOString().slice(0,10);
+    }
+    return null;
+  }
+
   val = String(val).trim();
-  // ISO format YYYY-MM-DD
+  if (!val) return null;
+
   if (/^\d{4}-\d{2}-\d{2}/.test(val)) return val.slice(0,10);
 
-  // Indonesian month names: "11 Mei 2026", "5 Januari 2026", etc.
   var ID_MONTHS = {
     januari:1,februari:2,maret:3,april:4,mei:5,juni:6,
     juli:7,agustus:8,september:9,oktober:10,november:11,desember:12,
@@ -743,22 +769,46 @@ function parseDate(val) {
     if (mNum) return idMatch[3] + '-' + String(mNum).padStart(2,'0') + '-' + idMatch[1].padStart(2,'0');
   }
 
-  // DD/MM/YYYY — data CCF Indonesia: "01/05/2026" = 1 Mei 2026
-  // Penting: jangan treat sebagai MM/DD karena akan membuat filter bulan tidak akurat.
-  var dmySlash = val.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  if (dmySlash) {
-    var day = parseInt(dmySlash[1], 10);
-    var month = parseInt(dmySlash[2], 10);
-    var yr = dmySlash[3];
+  var slash = val.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (slash) {
+    var a = parseInt(slash[1], 10);
+    var b = parseInt(slash[2], 10);
+    var yr = slash[3];
+    var order = CLIENT_CONFIG.dateSlashOrder || 'MDY';
+    var day, month;
+
+    if (a > 12 && b <= 12) {
+      day = a; month = b;
+    } else if (b > 12 && a <= 12) {
+      month = a; day = b;
+    } else if (order === 'DMY') {
+      day = a; month = b;
+    } else {
+      month = a; day = b;
+    }
+
     return yr + '-' + String(month).padStart(2,'0') + '-' + String(day).padStart(2,'0');
   }
 
-  // DD-MM-YYYY
-  var dmy = val.match(/^(\d{1,2})-(\d{1,2})-(\d{4})/);
-  if (dmy) return dmy[3] + '-' + dmy[2].padStart(2,'0') + '-' + dmy[1].padStart(2,'0');
+  var dash = val.match(/^(\d{1,2})-(\d{1,2})-(\d{4})/);
+  if (dash) {
+    var da = parseInt(dash[1], 10);
+    var db = parseInt(dash[2], 10);
+    var dyr = dash[3];
+    var dday, dmonth;
+    if (da > 12 && db <= 12) {
+      dday = da; dmonth = db;
+    } else if (db > 12 && da <= 12) {
+      dmonth = da; dday = db;
+    } else if ((CLIENT_CONFIG.dateSlashOrder || 'MDY') === 'DMY') {
+      dday = da; dmonth = db;
+    } else {
+      dmonth = da; dday = db;
+    }
+    return dyr + '-' + String(dmonth).padStart(2,'0') + '-' + String(dday).padStart(2,'0');
+  }
 
-  // Google Sheets serial number
-  var n = parseInt(val);
+  var n = parseInt(val, 10);
   if (!isNaN(n) && n > 40000) {
     var d = new Date((n - 25569) * 86400 * 1000);
     return d.toISOString().slice(0,10);
@@ -766,47 +816,159 @@ function parseDate(val) {
   return null;
 }
 
+
+function normalizeTextKey(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/[\u2018\u2019\u201C\u201D"']/g, '')
+    .replace(/[^a-z0-9\u00c0-\u024f\u1e00-\u1eff]+/gi, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function normalizeUrlKey(url) {
+  if (!url) return '';
+  return String(url)
+    .trim()
+    .split('#')[0]
+    .split('?')[0]
+    .replace(/\/+$/, '')
+    .toLowerCase();
+}
+
+function pickBetterAnalytics(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  var scoreA = (a.r || 0) + (a.lk || 0) + (a.cm || 0) + (a.sh || 0) + (a.sv || 0);
+  var scoreB = (b.r || 0) + (b.lk || 0) + (b.cm || 0) + (b.sh || 0) + (b.sv || 0);
+  return scoreB > scoreA ? b : a;
+}
+
+function buildAnalyticsLookup(rows) {
+  var byUrl = {};
+  var byTopic = {};
+  rows.forEach(function(x) {
+    var u = normalizeUrlKey(x.url);
+    var t = normalizeTextKey(x.t);
+    if (u) byUrl[u] = pickBetterAnalytics(byUrl[u], x);
+    if (t) byTopic[t] = pickBetterAnalytics(byTopic[t], x);
+  });
+  return {byUrl: byUrl, byTopic: byTopic};
+}
+
+function mergeAnalyticsPerformance(baseRows, analyticsRows) {
+  var lookup = buildAnalyticsLookup(analyticsRows);
+  return baseRows.map(function(base) {
+    var matched = null;
+    var u = normalizeUrlKey(base.url);
+    var t = normalizeTextKey(base.t);
+    if (u && lookup.byUrl[u]) matched = lookup.byUrl[u];
+    else if (t && lookup.byTopic[t]) matched = lookup.byTopic[t];
+
+    var out = Object.assign({}, base);
+    if (matched) {
+      out.r = matched.r || 0;
+      out.lk = matched.lk || 0;
+      out.cm = matched.cm || 0;
+      out.sh = matched.sh || 0;
+      out.sv = matched.sv || 0;
+      out.url = out.url || matched.url || '';
+      out.analyticsTab = matched.sourceTab || '';
+      out.matchSource = u && lookup.byUrl[u] ? 'link' : 'topic';
+    } else {
+      out.analyticsTab = '';
+      out.matchSource = 'none';
+    }
+    return out;
+  });
+}
+
+function dedupeRows(rows) {
+  var seen = {};
+  var out = [];
+  rows.forEach(function(x) {
+    var key = normalizeUrlKey(x.url) || (x.d + '|' + normalizeTextKey(x.t));
+    if (!key) key = x.d + '|' + normalizeTextKey(x.t) + '|' + out.length;
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push(x);
+  });
+  return out;
+}
+
+function countRowsByMonth(rows) {
+  return rows.reduce(function(acc, x) {
+    if (!x.d) return acc;
+    var ym = x.d.slice(0, 7);
+    acc[ym] = (acc[ym] || 0) + 1;
+    return acc;
+  }, {});
+}
+
 async function loadData() {
   var overlay = document.getElementById('loading-overlay');
   var loadingText = document.getElementById('loading-text');
   if (overlay) overlay.classList.remove('hidden');
   if (loadingText) { loadingText.style.display = ''; loadingText.textContent = 'Mengambil data dari Google Sheets...'; }
+
   try {
-    var candidates = CLIENT_CONFIG.tabCandidates || [TAB_NAME];
-    var best = {rows: [], score: -1, tab: TAB_NAME};
-    var lastError = null;
+    var baseTabs = CLIENT_CONFIG.baseCcfTabs || ['CCF JUNI', 'CCF MEI'];
+    var analyticsTab = CLIENT_CONFIG.analyticsTabName || 'Analisa Konten .. ..';
 
-    for (var ti = 0; ti < candidates.length; ti++) {
+    var baseRows = [];
+    var loadedBaseTabs = [];
+    var skippedBaseTabs = [];
+
+    for (var i = 0; i < baseTabs.length; i++) {
+      var tab = baseTabs[i];
       try {
-        TAB_NAME = candidates[ti];
-        var raw = await fetchSheetData();
-        var rows = parseSheetData(raw);
-        if (!rows.length) continue;
-
-        // Pilih tab yang paling layak untuk analytics: utamakan data yang punya Reach.
-        // Ini mencegah dashboard memakai CCF kosong/plan jika ada sheet Analisa Konten yang lebih lengkap.
-        var withReach = rows.filter(function(x){ return x.r > 0; }).length;
-        var score = (withReach * 1000) + rows.length;
-        if (score > best.score) {
-          best = {rows: rows, score: score, tab: TAB_NAME};
+        var rawBase = await fetchSheetData(tab);
+        var parsedBase = parseSheetData(rawBase, {sourceTab: tab, sourceRole: 'ccf'});
+        if (parsedBase.length) {
+          baseRows = baseRows.concat(parsedBase);
+          loadedBaseTabs.push(tab + ' (' + parsedBase.length + ')');
+        } else {
+          skippedBaseTabs.push(tab + ' (0 rows)');
         }
-      } catch(err) {
-        lastError = err;
+      } catch (err) {
+        skippedBaseTabs.push(tab + ' (' + err.message + ')');
       }
     }
 
-    var parsed = best.rows;
+    var analyticsRows = [];
+    try {
+      var rawAnalytics = await fetchSheetData(analyticsTab);
+      analyticsRows = parseSheetData(rawAnalytics, {sourceTab: analyticsTab, sourceRole: 'analytics'});
+    } catch (analyticsErr) {
+      console.warn('[CCF Dashboard] Analytics tab gagal dimuat:', analyticsErr);
+    }
+
+    var parsed = baseRows.length ? mergeAnalyticsPerformance(dedupeRows(baseRows), analyticsRows) : analyticsRows;
+
     if (!parsed.length && STATIC_DATA && STATIC_DATA.length) {
       parsed = STATIC_DATA.map(function(x){ return Object.assign({}, x); });
-      best.tab = 'STATIC_DATA';
+      loadedBaseTabs.push('STATIC_DATA');
     }
-    if (parsed.length === 0) throw new Error(lastError ? lastError.message : 'Tidak ada data valid pada Google Sheets.');
 
-    CLIENT_CONFIG.activeTab = best.tab;
+    if (!parsed.length) {
+      throw new Error('Tidak ada data valid pada CCF/Analisa Konten.');
+    }
+
     P_ALL = parsed;
     P_ALL.forEach(function(x){ x.dateObj = new Date(x.d + 'T00:00:00'); });
     P_ALL = P_ALL.filter(function(x){ return x.dateObj && !isNaN(x.dateObj.getTime()); });
     P_ALL.sort(function(a,b){ return a.dateObj - b.dateObj; });
+
+    CLIENT_CONFIG.activeTab = baseRows.length ? baseTabs.join(' + ') : analyticsTab;
+    CLIENT_CONFIG.analyticsLoadedRows = analyticsRows.length;
+
+    console.log('[CCF Dashboard] Client:', CLIENT_CONFIG.name);
+    console.log('[CCF Dashboard] Base CCF tabs:', loadedBaseTabs);
+    console.log('[CCF Dashboard] Skipped base tabs:', skippedBaseTabs);
+    console.log('[CCF Dashboard] Analytics tab:', analyticsTab, analyticsRows.length + ' rows');
+    console.log('[CCF Dashboard] Data scope:', baseRows.length ? 'CCF monthly tabs + analytics performance' : 'analytics fallback');
+    console.log('[CCF Dashboard] Rows by month:', countRowsByMonth(P_ALL));
 
     applyDashboardDateFilter(null, null, 'all', true);
     if (overlay) overlay.classList.add('hidden');
