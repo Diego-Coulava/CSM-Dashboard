@@ -218,6 +218,13 @@ main{padding:28px 40px;max-width:1360px;margin:0 auto;position:relative;z-index:
 .master-search{flex:1;min-width:220px;font-size:12px;padding:10px 12px;border-radius:10px;border:0.5px solid var(--border2);background:var(--bg3);color:var(--text2);font-family:'DM Mono',monospace;outline:none}
 .master-search:focus{border-color:var(--purple);box-shadow:0 0 0 3px rgba(106,41,245,0.08)}
 .client-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.client-section-head{font-size:12px;font-weight:800;color:var(--text);margin:8px 0 12px;display:flex;align-items:center;gap:10px}
+.client-section-count{font:10px 'DM Mono',monospace;color:var(--text3);font-weight:400}
+.archive-panel{margin-top:22px;padding-top:14px;border-top:1px solid var(--border)}
+.archive-panel summary{font:12px 'DM Mono',monospace;color:var(--text3);cursor:pointer;list-style:revert;margin-bottom:14px}
+.archive-panel[open] summary{color:var(--text)}
+#client-archive-cards .client-card{filter:saturate(.72);opacity:.85}
+#client-archive-cards .client-card:hover{opacity:1}
 .client-card{background:var(--bg3);border:0.5px solid var(--border);border-radius:14px;padding:14px;transition:all .14s;min-height:142px;display:flex;flex-direction:column;gap:10px}
 .client-card:hover{border-color:var(--border3);transform:translateY(-1px);box-shadow:0 8px 28px rgba(106,41,245,0.08)}
 .client-card.disabled{opacity:.58;filter:saturate(.7)}
@@ -330,10 +337,15 @@ body.master-no-client main, body.master-no-client .nav-tabs{filter:blur(2px);poi
       <button class="master-close" onclick="closeClientSelector()" title="Tutup">✕</button>
     </div>
     <div class="master-toolbar">
-      <input class="master-search" id="client-search" placeholder="Cari client... contoh: Lira, Mario Dita, Fadli Zon" oninput="renderClientCards()">
+      <input class="master-search" id="client-search" placeholder="Cari client aktif atau archive..." oninput="renderClientCards()">
       <button class="action-btn" onclick="renderClientCards()">Refresh List</button>
     </div>
+    <div class="client-section-head">Client Aktif <span class="client-section-count" id="active-client-count"></span></div>
     <div id="client-cards" class="client-grid"></div>
+    <details class="archive-panel" id="client-archive-details">
+      <summary>Archive · Client Lama <span id="archive-client-count"></span></summary>
+      <div id="client-archive-cards" class="client-grid"></div>
+    </details>
     <div class="master-note">
       Catatan: semua client live distandarkan membaca tab <strong>Analisa Konten</strong>. Tidak ada fallback tab agar sumber data tidak salah.
     </div>
@@ -643,6 +655,7 @@ var MASTER_CLIENTS = [
   {
     "name": "Omotott",
     "slug": "omotott",
+    "archived": true,
     "sheetId": "1GrRnXYgpW54GvFGudVAoFjPvBQ8M3VnmhAfwavO9JUM",
     "gid": "885361054",
     "tabName": "Analisa Konten",
@@ -657,6 +670,7 @@ var MASTER_CLIENTS = [
   {
     "name": "Lira",
     "slug": "lira",
+    "archived": true,
     "sheetId": "1_SMgLhsDWwRFQz2dSNVqr6GgalxsPxmDd19axPgUviI",
     "gid": "885361054",
     "tabName": "Analisa Konten",
@@ -765,6 +779,7 @@ var MASTER_CLIENTS = [
   {
     "name": "Mitup",
     "slug": "mitup",
+    "archived": true,
     "sheetId": "14yKW6LPXgk-Ma2qpresOQVwg1c70d8GsKDkWhXtqf4o",
     "gid": "885361054",
     "tabName": "Analisa Konten",
@@ -778,6 +793,7 @@ var MASTER_CLIENTS = [
   {
     "name": "INH for Humanity",
     "slug": "inh-for-humanity",
+    "archived": true,
     "sheetId": "1Lu6Dp0MuYgc4mtLbtYUce4pXWrSVOiwqSCxpHXk8ZcE",
     "gid": "885361054",
     "tabName": "Analisa Konten",
@@ -804,6 +820,7 @@ var MASTER_CLIENTS = [
   {
     "name": "ICE Institute",
     "slug": "ice-institute",
+    "archived": true,
     "sheetId": "1hb5is1oPwdrU25Lr1FwSwi506GOfkhImElyyczz9nNA",
     "gid": "885361054",
     "tabName": "Analisa Konten",
@@ -817,6 +834,7 @@ var MASTER_CLIENTS = [
   {
     "name": "Mario Dita",
     "slug": "mario-dita",
+    "archived": true,
     "sheetId": "15NmUYsgHAQSomEAQk-eF0_czSBJluEn8w8j8je06fVg",
     "gid": "885361054",
     "tabName": "Analisa Konten",
@@ -843,6 +861,7 @@ var MASTER_CLIENTS = [
   {
     "name": "Peluk Diri",
     "slug": "peluk-diri",
+    "archived": true,
     "sheetId": "16nQUtV6MILvFhDmYHw8iptzrthEESIAShakAUHxwIJg",
     "gid": "885361054",
     "tabName": "Analisa Konten",
@@ -1851,7 +1870,7 @@ function showDP(eRow, eCol) {
     return '<div class="dp-row">'+nameHtml+'<span class="dp-meta"><span>'+x.r.toLocaleString()+' reach</span><span>'+erFn(x).toFixed(1)+'% ER</span><span>'+fmtDate(x.d)+'</span></span></div>';
   }).join('');
   document.getElementById('dp-btn').textContent = 'Buat 3 ide konten: '+row+' × '+col+' ↗';
-  document.getElementById('dp-btn').onclick = function(){ window.open('https://chatgpt.com/', '_blank', 'noopener,noreferrer'); };
+  document.getElementById('dp-btn').onclick = function(){ openCurrentClientProject(); };
   var card = document.getElementById('dp-card');
   card.classList.add('on');
   setTimeout(function(){ card.scrollIntoView({behavior:'smooth',block:'nearest'}); }, 50);
@@ -2382,7 +2401,7 @@ function buatKontenMingguIni() {
   var data = getL30Data();
   if (data.length < 3) data = P.slice(-30);
   var prompt = buildContentPrompt(data, CLIENT_CONFIG);
-  copyAndOpen(prompt, 'Prompt konten tersalin — paste di ChatGPT akun SMM untuk ' + CLIENT_CONFIG.name);
+  copyAndOpen(prompt, 'Prompt konten tersalin — paste ke ChatGPT Project ' + CLIENT_CONFIG.name);
 }
 
 // =====================================================
@@ -2391,6 +2410,10 @@ function buatKontenMingguIni() {
 var selectedBulananKey = null;
 
 function openReportModal() {
+  if (MASTER_SELECTED_CLIENT && !REPORT_PROJECT_URL) {
+    showToast('Link Project ChatGPT untuk ' + CLIENT_CONFIG.name + ' belum tersedia');
+    return;
+  }
   selectedReportType = 'bulanan';
   selectedBulananKey = null;
   document.getElementById('opt-bulanan').classList.add('selected');
@@ -2712,6 +2735,7 @@ function buildReportPrompt(data, compData, periodLabel, config) {
 }
 
 function generateReportPrompt() {
+  if (!REPORT_PROJECT_URL) { showToast('Link Project ChatGPT belum tersedia'); return; }
   if (!P.length) { showToast('Data belum dimuat'); return; }
 
   var start, end, selectedPeriod;
@@ -2822,12 +2846,21 @@ function formulaBrief() {
     'Slide 6: Closing slide — Coulava Digital Creative Agency, Coulava.com\n\n' +
     'Output sebagai file PPTX yang bisa langsung didownload.';
 
-  copyAndOpen(prompt, 'Prompt formula brief tersalin — paste di ChatGPT akun SMM untuk ' + projectName);
+  copyAndOpen(prompt, 'Prompt formula brief tersalin — paste ke ChatGPT Project ' + projectName);
 }
 
 // =====================================================
 // COPY + OPEN HELPER
 // =====================================================
+function openCurrentClientProject() {
+  // Semua aksi dashboard memakai Project ChatGPT dari client yang dipilih.
+  if (!REPORT_PROJECT_URL) {
+    showToast('Link Project ChatGPT untuk ' + (CLIENT_CONFIG.name || 'client ini') + ' belum tersedia');
+    return;
+  }
+  window.open(REPORT_PROJECT_URL, '_blank', 'noopener,noreferrer');
+}
+
 function copyAndOpen(text, toastMsg, purpose) {
   function copyPlainText(value, cb) {
     var done = function(){ if (cb) cb(); };
@@ -2875,11 +2908,14 @@ function copyAndOpen(text, toastMsg, purpose) {
       copyPlainText(edited, function(){ showToast('Prompt plain text tersalin'); });
     };
     document.getElementById('cp-open-btn').onclick = function() {
+      // Open synchronously on the user's click to avoid popup blockers.
+      if (!REPORT_PROJECT_URL) {
+        showToast('Link Project ChatGPT untuk ' + CLIENT_CONFIG.name + ' belum tersedia');
+        return;
+      }
       var edited = document.getElementById('prompt-editor').value;
+      openCurrentClientProject();
       copyPlainText(edited, function(){
-        var destination = purpose === 'report' ? REPORT_PROJECT_URL : 'https://chatgpt.com/';
-        if (destination) window.open(destination, '_blank', 'noopener,noreferrer');
-        else showToast('Link Project Report ' + CLIENT_CONFIG.name + ' belum tersedia');
         if (document.body.contains(overlay)) document.body.removeChild(overlay);
       });
     };
@@ -2938,32 +2974,48 @@ function closeClientSelector() {
 }
 
 function renderClientCards() {
-  var el = document.getElementById('client-cards');
-  if (!el) return;
+  var activeEl = document.getElementById('client-cards');
+  var archiveEl = document.getElementById('client-archive-cards');
+  if (!activeEl || !archiveEl) return;
   var q = (document.getElementById('client-search')?.value || '').toLowerCase().trim();
-  var list = MASTER_CLIENTS.filter(function(c){
+  var matches = MASTER_CLIENTS.filter(function(c){
     return !q || c.name.toLowerCase().indexOf(q) !== -1 || c.slug.toLowerCase().indexOf(q) !== -1;
   });
-  if (!list.length) {
-    el.innerHTML = '<div class="master-empty-state" style="grid-column:1/-1">Client tidak ditemukan.</div>';
-    return;
-  }
-  el.innerHTML = list.map(function(c){
+  var active = matches.filter(function(c){ return !c.archived; });
+  var archived = matches.filter(function(c){ return !!c.archived; });
+  var activeCount = document.getElementById('active-client-count');
+  var archiveCount = document.getElementById('archive-client-count');
+  if (activeCount) activeCount.textContent = '(' + active.length + ')';
+  if (archiveCount) archiveCount.textContent = '(' + archived.length + ')';
+
+  function renderCard(c) {
     var sheetUrl = getClientSheetUrl(c);
-    var status = c.disabled ? (c.ccfStatus || 'Link CCF belum tersedia') : 'Google Sheets CCF tersedia';
+    var noCCF = c.disabled || !c.sheetId;
+    var status = c.archived ? 'Archive · data CCF historis'
+      : noCCF ? (c.ccfStatus || 'Link CCF belum tersedia')
+      : 'Google Sheets CCF tersedia';
     var gidText = c.gid ? 'gid: ' + c.gid : 'gid: default/auto';
-    var loadBtn = c.disabled || !c.sheetId
-      ? '<button class="client-small-btn" onclick="showToast(\'' + c.name.replace(/'/g, "\\'") + ' belum punya Google Sheets CCF live\')">Belum Bisa Load</button>'
-      : '<button class="client-small-btn primary" onclick="selectClient(\'' + c.slug + '\')">Load Dashboard</button>';
+    // CCF-less clients can open their known GPT Project, but cannot generate
+    // performance reports until a genuine live CCF URL is configured.
+    var loadBtn = noCCF
+      ? c.reportProjectUrl
+        ? '<a class="client-small-btn primary" href="' + c.reportProjectUrl + '" target="_blank" rel="noopener noreferrer">Buka Project GPT</a>'
+        : '<button class="client-small-btn" onclick="showToast(\'Link CCF belum tersedia\')">Belum Bisa Load</button>'
+      : '<button class="client-small-btn primary" onclick="selectClient(\'' + c.slug + '\')">' + (c.archived ? 'Buka Arsip' : 'Load Dashboard') + '</button>';
     var ccfBtn = sheetUrl
       ? '<a class="client-small-btn" href="' + sheetUrl + '" target="_blank" rel="noopener">Open CCF</a>'
       : '<button class="client-small-btn" onclick="showToast(\'Link CCF belum tersedia\')">Link CCF belum tersedia</button>';
-    return '<div class="client-card ' + (c.disabled || !c.sheetId ? 'disabled' : '') + '">' +
+    return '<div class="client-card ' + (noCCF ? 'disabled' : '') + '">' +
       '<div class="client-top"><div class="client-avatar">' + clientInitials(c.name) + '</div><div><div class="client-name">' + c.name + '</div><div class="client-meta">' + status + '</div></div></div>' +
       '<div class="client-meta">Sheet: ' + (c.sheetId || '[belum tersedia]') + '<br>Tab: ' + (c.tabName || c.analyticsTab || '[belum tersedia]') + '<br>' + gidText + '</div>' +
       '<div class="client-actions">' + loadBtn + ccfBtn + '</div>' +
     '</div>';
-  }).join('');
+  }
+  var empty = '<div class="master-empty-state" style="grid-column:1/-1">Tidak ada client yang cocok.</div>';
+  activeEl.innerHTML = active.length ? active.map(renderCard).join('') : empty;
+  archiveEl.innerHTML = archived.length ? archived.map(renderCard).join('') : empty;
+  var archivePanel = document.getElementById('client-archive-details');
+  if (archivePanel && q && archived.length) archivePanel.open = true;
 }
 
 function resetDashboardStateForClient() {
